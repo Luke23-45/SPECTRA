@@ -1,0 +1,35 @@
+# configs/dataset/nyuv2.yaml
+# Dataset configuration for NYUv2 multi-task dense prediction benchmark.
+
+dataset_name: nyuv2
+root: "data/nyuv2"           # Root directory for NYUv2 .npy files
+augmentation: true            # RandomScaleCrop + RandomHorizontalFlip (train only)
+normalize_rgb: false          # ImageNet normalization (enable for pretrained backbones)
+
+# NYUv2 Specifications (DO NOT MODIFY — matches MTAN standard)
+num_classes: 13               # Semantic segmentation classes
+ignore_index: 255             # Label index ignored by CrossEntropyLoss
+image_height: 288             # MTAN-standard resolution
+image_width: 384              # MTAN-standard resolution
+
+# Split sizes (for validation only)
+train_size: 795
+val_size: 654
+
+# Task definitions for the trainer
+tasks:
+  - name: segmentation
+    type: dense_classification
+    loss: cross_entropy
+    num_classes: 13
+    ignore_index: 255
+
+  - name: depth
+    type: dense_regression
+    loss: masked_l1
+    output_dim: 1
+
+  - name: normals
+    type: dense_regression
+    loss: cosine_dense
+    output_dim: 3

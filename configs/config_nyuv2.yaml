@@ -1,0 +1,39 @@
+defaults:
+  - method: bpgs
+  - dataset: nyuv2
+  - _self_
+
+# ─── Experiment Metadata ──────────────────────────────────────
+run_name: "${method.name}_nyuv2_s${seed}"
+seed: 42
+
+# ─── Model Architecture ──────────────────────────────────────
+model:
+  backbone: segnet
+  input_channels: 3
+  d_model: 64
+
+# ─── Tasks (from dataset config) ──────────────────────────────
+tasks: ${dataset.tasks}
+
+# ─── Training Hyperparameters ────────────────────────────────
+train:
+  epochs: 200
+  batch_size: 2           # NYUv2 images are large (288×384) — GPU memory constraint
+  lr: 0.0001              # Lower than synthetic (dense prediction converges slower)
+  min_lr: 0.000001
+  warmup_steps: 100
+  weight_decay: 0.0001
+  grad_clip: 2.0
+  precision: 32
+  num_workers: 4
+  log_every_n_steps: 10
+
+# ─── Logging ─────────────────────────────────────────────────
+logging:
+  use_wandb: false
+  wandb_project: spectra-mtl
+  wandb_mode: offline
+
+# ─── Output ──────────────────────────────────────────────────
+output_dir: "./outputs/${run_name}"
