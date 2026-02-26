@@ -38,7 +38,8 @@ References:
 from __future__ import annotations
 
 import os
-import fnmatch
+import lmdb
+import json
 import logging
 import numpy as np
 import torch
@@ -115,55 +116,50 @@ class NYUv2Dataset(Dataset):
 
     def __init__(
         self,
-        root: str = "data/nyuv2",
+        root: str = "data/nyuv2_lmdb",
         split: str = "train",
         augmentation: bool = True,
         normalize_rgb: bool = False,
-        validate_schema: bool = True,
         subset_pct: float = 1.0,
         subset_seed: int = 42,
+        num_classes: int = 13,
     ):
         super().__init__()
 
         self.root = Path(root)
-        self.split = split
-        self.data_path = self.root / split
-
-        # --- Validate Directory Structure ---
-        if not self.data_path.is_dir():
-            raise FileNotFoundError(
-                f"[NYUv2] Split directory not found: {self.data_path}\n"
-                f"Run `python -m spectra.data.nyuv2.download` to download."
-            )
-
-        for modality in ["image", "label", "depth", "normal"]:
-            mod_dir = self.data_path / modality
-            if not mod_dir.is_dir():
-                raise FileNotFoundError(
-                    f"[NYUv2] Missing modality directory: {mod_dir}\n"
-                    f"Expected MTAN-format directory structure."
-                )
-
-        # --- Count Available Files ---
-        self.data_len = len(fnmatch.filter(
-            os.listdir(str(self.data_path / "image")), "*.npy"
-        ))
-
+        self.split = "val" if split in ["validation", "val", "test"] else "train"
+        self.num_classes = num_classes
+        
+        # --- Axe v6.6: Multi-Directory Resolution ---
+        # The new structure places data.lmdb inside split-specific subdirs
+        self.split_dir = self.root / self.split
+        self.lmdb_path = self.split_dir / "data.lmdb"
+        self.index_path = self.root / f"{self.split}_index.json"
+        
+        if not self.lmdb_path.exists():
+            raise FileNotFoundError(f"[NYUv2-Axe] LMDB missing at: {self.lmdb_path}")
+        if not self.index_path.exists():
+            raise FileNotFoundError(f"[NYUv2-Axe] Index missing at: {self.index_path}")
+            
+        with open(self.index_path, "r") as f:
+            self.manifest = json.load(f)
+            
+        # The new schema uses "episodes" as the primary list
+        self.samples = self.manifest.get("episodes", [])
+        self.data_len = len(self.samples)
+        
+        # Axe v6.6: Global stats are now inside "metadata"
+        self.metadata = self.manifest.get("metadata", {})
+        self.stats = self.metadata.get("stats", {})
+        
         if self.data_len == 0:
-            raise RuntimeError(f"[NYUv2] No .npy files found in {self.data_path / 'image'}")
+            logger.warning(f"[NYUv2-Axe] Split {self.split} index is EMPTY.")
 
-        # --- Schema Validation ---
-        if validate_schema:
-            expected = EXPECTED_SPLIT_SIZES.get(split, 0)
-            if expected > 0 and self.data_len != expected:
-                logger.warning(
-                    f"[NYUv2] File count mismatch in {split}: "
-                    f"found {self.data_len}, expected {expected}. "
-                    f"Proceeding with found count."
-                )
+        # Fork-safety
+        self._lmdb_env = None
+        self._parent_pid = os.getpid()
 
-        # --- Build Index ---
-        # Use simple integer indices (MTAN convention: 0.npy, 1.npy, ...)
+        # --- Build Index (Subset support) ---
         all_indices = list(range(self.data_len))
         
         if 0.0 < subset_pct < 1.0:
@@ -189,107 +185,69 @@ class NYUv2Dataset(Dataset):
         )
 
     def __len__(self) -> int:
-        return self.data_len
+        return len(self.indices)
+
+    def _init_lmdb(self):
+        curr_pid = os.getpid()
+        if self._lmdb_env is not None and curr_pid != self._parent_pid:
+            self._lmdb_env = None
+            self._parent_pid = curr_pid
+
+        if self._lmdb_env is None:
+            self._lmdb_env = lmdb.open(
+                str(self.lmdb_path),
+                readonly=True,
+                lock=False,
+                readahead=False,
+                meminit=False,
+                subdir=False
+            )
+
+    def _read_bytes(self, key: str) -> bytes:
+        self._init_lmdb()
+        with self._lmdb_env.begin(write=False) as txn:
+            data = txn.get(key.encode('ascii'))
+            if data is None:
+                raise KeyError(f"LMDB Key failure: {key}")
+            return data
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        """
-        Load and transform a single sample.
+        global_idx = self.indices[idx]
+        sample_meta = self.samples[global_idx]
+        hw = sample_meta["shape_hw"]
 
-        Returns SPECTRA-compatible dict with input, targets, and metadata.
-        """
-        index = self.indices[idx]
+        # 1. Fetch & Deserialize (Axe v6.6: NASA-Grade Integrity)
+        # Image (uint8, [H, W, 3])
+        img_bytes = self._read_bytes(sample_meta["image_key"])
+        image = np.frombuffer(img_bytes, dtype=np.uint8).reshape(*hw, 3).copy()
+        image = torch.from_numpy(np.moveaxis(image, -1, 0)).float() / 255.0
 
-        # ==================================================================
-        # 1. LOAD RAW DATA FROM .npy FILES
-        # ==================================================================
-        # Image: (H, W, 3) → (3, H, W) via moveaxis
-        image = torch.from_numpy(
-            np.moveaxis(
-                np.load(str(self.data_path / "image" / f"{index}.npy")),
-                -1, 0,  # (H, W, C) → (C, H, W)
-            )
-        ).float()
+        # Label (uint8, [H, W])
+        lbl_bytes = self._read_bytes(sample_meta["label_key"])
+        label = np.frombuffer(lbl_bytes, dtype=np.uint8).reshape(*hw).copy()
+        label = torch.from_numpy(label).long()
 
-        # Label: (H, W) — stays 2D, no channel dimension
-        label_raw = np.load(str(self.data_path / "label" / f"{index}.npy"))
+        # Depth (float16 -> float32, [H, W, 1])
+        depth_bytes = self._read_bytes(sample_meta["depth_key"])
+        depth = np.frombuffer(depth_bytes, dtype=np.float16).reshape(*hw, 1).copy()
+        depth = torch.from_numpy(np.moveaxis(depth, -1, 0)).float()
 
-        # CRITICAL: Remap -1 → 255 for CrossEntropyLoss ignore_index
-        # NYUv2 uses -1 for unlabeled pixels; PyTorch CE expects positive or 255
-        label_raw = label_raw.copy()  # Ensure writeable array
-        label_raw[label_raw == -1] = IGNORE_INDEX
+        # Normal (float16 -> float32, [H, W, 3])
+        norm_bytes = self._read_bytes(sample_meta["normal_key"])
+        normal = np.frombuffer(norm_bytes, dtype=np.float16).reshape(*hw, 3).copy()
+        normal = torch.from_numpy(np.moveaxis(normal, -1, 0)).float()
 
-        # OPTIONAL: Reduced Classes (Axe v3.2 Fast-Iter)
-        if self.num_classes == 3:
-            # Aggregate 13 maps -> 3 Super-Classes
-            # 0: Structural (Wall, Floor, Ceiling/Window)
-            # 1: Furniture (Bed, Chair, Sofa, Table, Cabinet, ...)
-            # 2: Props/Other
-            new_label = np.zeros_like(label_raw)
-            # Structural: wall(0), floor(1), window(8), door(7)
-            mask_structural = np.isin(label_raw, [0, 1, 7, 8])
-            # Furniture: cabinet(2), bed(3), chair(4), sofa(5), table(6), bookshelf(9), desk(13)
-            mask_furniture = np.isin(label_raw, [2, 3, 4, 5, 6, 9, 13])
-            
-            new_label[mask_structural] = 0
-            new_label[mask_furniture] = 1
-            new_label[~(mask_structural | mask_furniture)] = 2
-            
-            # Preserve Ignore Index
-            new_label[label_raw == IGNORE_INDEX] = IGNORE_INDEX
-            label_raw = new_label
+        # 2. Safety Checks
+        if torch.isnan(image).any(): image = torch.nan_to_num(image)
+        if torch.isnan(depth).any(): depth = torch.nan_to_num(depth)
+        if torch.isnan(normal).any(): normal = torch.nan_to_num(normal)
 
-        label = torch.from_numpy(label_raw).long()
-
-        # Depth: (H, W, 1) → (1, H, W) via moveaxis
-        depth = torch.from_numpy(
-            np.moveaxis(
-                np.load(str(self.data_path / "depth" / f"{index}.npy")),
-                -1, 0,
-            )
-        ).float()
-
-        # Normal: (H, W, 3) → (3, H, W) via moveaxis
-        normal = torch.from_numpy(
-            np.moveaxis(
-                np.load(str(self.data_path / "normal" / f"{index}.npy")),
-                -1, 0,
-            )
-        ).float()
-
-        # ==================================================================
-        # 2. NaN / Inf SAFETY CHECK (before transforms)
-        # ==================================================================
-        if torch.isnan(image).any() or torch.isinf(image).any():
-            logger.warning(f"[NYUv2] NaN/Inf in image at idx {idx}. Replacing with 0.")
-            image = torch.nan_to_num(image, nan=0.0, posinf=255.0, neginf=0.0)
-
-        if torch.isnan(depth).any() or torch.isinf(depth).any():
-            logger.warning(f"[NYUv2] NaN/Inf in depth at idx {idx}. Replacing with 0.")
-            depth = torch.nan_to_num(depth, nan=0.0, posinf=10.0, neginf=0.0)
-
-        if torch.isnan(normal).any() or torch.isinf(normal).any():
-            logger.warning(f"[NYUv2] NaN/Inf in normals at idx {idx}. Replacing with up-vector.")
-            normal = torch.nan_to_num(normal, nan=0.0, posinf=1.0, neginf=-1.0)
-
-        # ==================================================================
-        # 3. APPLY TRANSFORMS (spatial augmentations)
-        # ==================================================================
+        # 3. Apply Transforms
         image, label, depth, normal = self.transform(image, label, depth, normal)
 
-        # ==================================================================
-        # 4. DEPTH VALIDITY MASK (computed AFTER transforms)
-        # ==================================================================
-        # CRITICAL: This MUST be computed after spatial transforms, not before.
-        # RandomScaleCrop and RandomHorizontalFlip change pixel positions.
-        # Computing the mask before transforms would cause spatial misalignment
-        # — the mask would refer to PRE-transform positions while the depth
-        # values are at POST-transform positions. This silently corrupts the
-        # depth loss by masking the WRONG pixels.
+        # 4. Meta / Mask
         depth_mask = (depth > 0.0).float()
 
-        # ==================================================================
-        # 5. RETURN SPECTRA-COMPATIBLE DICT
-        # ==================================================================
         return {
             "input": image,
             "targets": {
@@ -299,7 +257,7 @@ class NYUv2Dataset(Dataset):
             },
             "meta": {
                 "depth_mask": depth_mask,
-                "sample_id": f"nyuv2_{self.split}_{index}",
+                "sample_id": f"nyuv2_{self.split}_{idx}",
             },
         }
 

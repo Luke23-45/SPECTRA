@@ -7,12 +7,6 @@ Exports:
     - NYUv2Dataset: Core dataset (train/val loader)
     - NYUv2TrainTransform: Training augmentation pipeline
     - NYUv2TestTransform: Validation (no augmentation) pipeline
-    - download_nyuv2: Automated data acquisition
-    - NUM_CLASSES: 13
-    - IGNORE_INDEX: 255
-    - NYUv2_CLASS_NAMES: List of class names
-"""
-
 from .dataset import (
     NYUv2Dataset,
     NUM_CLASSES,
@@ -26,7 +20,6 @@ from .transforms import (
     RandomHorizontalFlip,
     ImageNetNormalize,
 )
-from .download import download_nyuv2
 
 __all__ = [
     "NYUv2Dataset",
@@ -35,7 +28,6 @@ __all__ = [
     "RandomScaleCrop",
     "RandomHorizontalFlip",
     "ImageNetNormalize",
-    "download_nyuv2",
     "NUM_CLASSES",
     "IGNORE_INDEX",
     "NYUv2_CLASS_NAMES",

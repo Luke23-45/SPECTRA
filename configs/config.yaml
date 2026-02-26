@@ -1,6 +1,7 @@
 defaults:
-  - method: bpgs_alb
   - _self_
+  - method: bpgs_alb
+  - dataset: default
 
 # ─── Experiment Metadata ──────────────────────────────────────
 run_name: "${method.name}_synthetic_s${seed}"

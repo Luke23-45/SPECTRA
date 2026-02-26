@@ -1,5 +1,5 @@
 defaults:
-  - method: bpgs
+  - method: bpgs_alb
   - dataset: nyuv2
   - _self_
 

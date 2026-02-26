@@ -1,5 +1,5 @@
 """
-icu/datasets/dataset_quality.py
+spectra/data/clinical/dataset_quality.py
 --------------------------------------------------------------------------------
 APEX-MoE SOTA Data Ingestion Pipeline (v5.1 — Production Hardened)
 
@@ -81,7 +81,7 @@ logger = logging.getLogger("APEX_QualityBuilder")
 # ==============================================================================
 # 1. CLINICAL SPECIFICATION (The "Clinical 28" Canonical Spec)
 # ==============================================================================
-# This order MUST matches icu/datasets/dataset.py CANONICAL_COLUMNS
+# This order MUST match spectra/data/clinical/dataset.py CANONICAL_COLUMNS
 RAW_CLINICAL_SPEC = {
     # Group A: Hemodynamic (0-6)
     'HR':       (75.0,  (20, 300),    'vital'),   # Synced to build_dataset.py

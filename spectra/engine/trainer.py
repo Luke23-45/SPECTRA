@@ -187,23 +187,27 @@ class SPECTRAModule(pl.LightningModule):
             needs_unsqueeze = True
 
         if self.use_alb:
-            # ALB expects [B, T, C_in] (3D) — NOT [B, C, H, W] (4D dense prediction)
-            if x.dim() == 4:
-                raise RuntimeError(
-                    f"[SPECTRA] ALB received 4D input {x.shape} — ALB requires 3D [B, T, C] input. "
-                    f"For dense prediction (NYUv2/SegNet), set `method.use_alb: false` in config. "
-                    f"ALB is designed for temporal/tabular data (clinical/synthetic benchmarks)."
-                )
             alb_out = self.alb(x)
             predictions = {}
             for name, head in self.heads.items():
                 manifold = self.task_manifolds[name]
-                if manifold == "planner":
-                    ctx = alb_out["global_planner"]
-                elif manifold == "expert":
-                    ctx = alb_out["global_expert"]
-                else:  # "both"
-                    ctx = torch.cat([alb_out["global_planner"], alb_out["global_expert"]], dim=-1)
+                task_type = self.task_types[name]
+                
+                # Agnostic Dispatch: 
+                # - Dense tasks (Vision) use the full lattice (planner/expert)
+                # - Scalar tasks (Clinical/Synthetic) use global summaries (planner_global/expert_global)
+                is_dense = task_type.startswith("dense")
+                
+                if manifold == "both":
+                    ctx_planner = alb_out["planner"] if is_dense else alb_out["planner_global"]
+                    ctx_expert = alb_out["expert"] if is_dense else alb_out["expert_global"]
+                    # Cat on channel dim (1 for 4D, -1 for 3D/2D)
+                    dim = 1 if ctx_planner.dim() == 4 else -1
+                    ctx = torch.cat([ctx_planner, ctx_expert], dim=dim)
+                else:
+                    key = manifold if is_dense else f"{manifold}_global"
+                    ctx = alb_out[key]
+                
                 predictions[name] = head(ctx)
         else:
             features = self.backbone(x)

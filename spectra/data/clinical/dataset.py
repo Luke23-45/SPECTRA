@@ -1,5 +1,5 @@
 """
-icu/datasets/dataset.py
+spectra/data/clinical/dataset.py
 --------------------------------------------------------------------------------
 APEX-MoE Frontier Data Loader.
 Author: APEX Research Team
@@ -37,7 +37,7 @@ from typing import Dict, List, Optional, Any, Tuple, Union
 from torch.utils.data import Dataset, default_collate, Sampler, WeightedRandomSampler
 from huggingface_hub import snapshot_download
 from tqdm import tqdm
-from icu.utils.train_utils import get_rank
+from spectra.engine.distributed import get_rank
 
 # --- Configuration & Constants ---
 logger = logging.getLogger("APEX_Data_Frontier")
@@ -137,7 +137,7 @@ def ensure_data_ready(
     try:
         # Dynamic import to avoid circular dependencies at module level
         # This assumes `build_dataset.py` exists in the same package or is accessible.
-        from .build_dataset import run_build_pipeline
+        from .dataset_quality import build_quality_dataset as run_build_pipeline
         
         # Ensure directory exists
         dataset_path.mkdir(parents=True, exist_ok=True)
@@ -441,16 +441,20 @@ class ICUTrajectoryDataset(Dataset):
         outcome = float((labels_win[self.history_len:] > 0.5).any())
 
         return {
-            "observed_data": torch.from_numpy(obs_data.copy()),  # Shape: [Hist, 28]
-            "future_data":   torch.from_numpy(fut_data.copy()),  # Shape: [Pred, 28]
-            "static_context": torch.from_numpy(full_static.copy()), # Shape: [Stat]
-            "src_mask":       torch.from_numpy(obs_mask.copy()),    # Shape: [Hist, 28]
-            "future_mask":    torch.from_numpy(fut_mask.copy()),    # Shape: [Pred, 28]
-            "outcome_label":  torch.tensor(outcome, dtype=torch.float32),
-            "phase_label":    torch.tensor(phase, dtype=torch.long),
-            "is_terminal":    torch.tensor(is_terminal, dtype=torch.bool),
-            "is_truncated":   torch.tensor(is_truncated, dtype=torch.bool),
-            "patient_id":     str(ep_meta.get("patient_id", "unknown"))
+            "input": torch.from_numpy(obs_data.copy()),  # [T, 28]
+            "targets": {
+                "outcome": torch.tensor(outcome, dtype=torch.float32),
+                "phase": torch.tensor(phase, dtype=torch.long),
+            },
+            "meta": {
+                "future_data":   torch.from_numpy(fut_data.copy()),  # [Pred, 28]
+                "static_context": torch.from_numpy(full_static.copy()), # [Stat]
+                "src_mask":       torch.from_numpy(obs_mask.copy()),    # [T, 28]
+                "future_mask":    torch.from_numpy(fut_mask.copy()),    # [Pred, 28]
+                "is_terminal":    torch.tensor(is_terminal, dtype=torch.bool),
+                "is_truncated":   torch.tensor(is_truncated, dtype=torch.bool),
+                "patient_id":     str(ep_meta.get("patient_id", "unknown"))
+            }
         }
 
 # ==============================================================================
@@ -492,32 +496,32 @@ class ICUSotaDataset(ICUTrajectoryDataset):
             sample = super().__getitem__(idx)
             
             # --- Robustness Checks ---
-            # 1. NaN Guard: Check BOTH observed and future data.
+            # 1. NaN Guard: Check BOTH input and future data.
             # AWR calculations on Future Data fail if NaNs are present.
-            if torch.isnan(sample["observed_data"]).any() or torch.isnan(sample["future_data"]).any():
+            if torch.isnan(sample["input"]).any() or torch.isnan(sample["meta"]["future_data"]).any():
                 logger.debug(f"Dropped NaN sample at idx {idx}")
                 return None # Collator will filter this out
 
             if self.is_training:
                 # 2. Gaussian Sensor Noise
                 if self.augment_noise > 0:
-                    noise = torch.randn_like(sample["observed_data"]) * self.augment_noise
-                    sample["observed_data"] += noise
+                    noise = torch.randn_like(sample["input"]) * self.augment_noise
+                    sample["input"] += noise
                 
                 # 3. Sensor Dropout (Masking)
                 # Simulates a sensor physically disconnecting (zeroing a channel)
                 if self.augment_mask_prob > 0:
                     # Create channel mask [C]
-                    mask = torch.rand(sample["observed_data"].shape[1]) > self.augment_mask_prob
+                    mask = torch.rand(sample["input"].shape[1]) > self.augment_mask_prob
                     # Broadcast mask [C] -> [T, C]
                     mask_broadcast = mask.float()
-                    sample["observed_data"] *= mask_broadcast
+                    sample["input"] *= mask_broadcast
                     
                     # [Patch 62] Synchronize Imputation Mask
                     # Rationale: If we drop a sensor, we must tell the model it's MISSING (0), 
                     # not VALID ZERO (1). Otherwise, it learns falsely that 0.0 is a valid readout.
-                    if "src_mask" in sample:
-                         sample["src_mask"] *= mask_broadcast
+                    if "src_mask" in sample["meta"]:
+                         sample["meta"]["src_mask"] *= mask_broadcast
 
             return sample
 

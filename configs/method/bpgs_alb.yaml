@@ -1,10 +1,10 @@
 # ─── B-PGS + ALB (Ours — Full SPECTRA) ───────────────────────
 name: bpgs_alb
 
-# B-PGS parameters
+# B-PGS parameters (Locked v3.0 Specs)
 use_sigmoid: true
 use_autocal: true
-s_min: -2.0
+s_min: -5.0
 s_max: 10.0
 ema_decay: 0.99
 

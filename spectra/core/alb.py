@@ -211,11 +211,15 @@ class AsymmetricLatentBottleneck(nn.Module):
         else:
             global_expert = ctx_expert.max(dim=1)[0]  # [B, D]
 
+        # [v3.2 Spec] Cache for Spectral Monitoring Callback
+        self.last_planner_ctx = global_planner.detach()
+        self.last_expert_ctx = global_expert.detach()
+
         return {
-            "ctx_planner": ctx_planner,
-            "global_planner": global_planner,
-            "ctx_expert": ctx_expert,
-            "global_expert": global_expert,
+            "planner": ctx_planner,
+            "planner_global": global_planner,
+            "expert": ctx_expert,
+            "expert_global": global_expert,
         }
 
     def extra_repr(self) -> str:
@@ -293,9 +297,16 @@ class SpatialALB(nn.Module):
         # 4. Injection: Trunk + (Gate * Expert_Residual)
         ctx_expert = x_trunk + (gate_map * expert_res)
 
+        # [v3.2 Spec] Cache for Spectral Monitoring Callback (Spatial Mean Pool)
+        # Note: We pool to [B, D] to allow 1D FFT over the representation dim.
+        self.last_planner_ctx = x_trunk.mean(dim=(2, 3)).detach()
+        self.last_expert_ctx = ctx_expert.mean(dim=(2, 3)).detach()
+
         return {
-            "ctx_planner": x_trunk,
-            "ctx_expert": ctx_expert,
+            "planner": x_trunk,
+            "planner_global": self.last_planner_ctx,
+            "expert": ctx_expert,
+            "expert_global": self.last_expert_ctx,
             "gate_mean": gate_map.mean(),
         }
 

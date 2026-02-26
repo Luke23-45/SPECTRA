@@ -1,10 +1,14 @@
 # configs/dataset/nyuv2.yaml
 # Dataset configuration for NYUv2 multi-task dense prediction benchmark.
 
-dataset_name: nyuv2
-root: "data/nyuv2"           # Root directory for NYUv2 .npy files
+name: nyuv2
+root: "data/nyuv2_lmdb"      # Root directory for high-fidelity LMDBs
 augmentation: true            # RandomScaleCrop + RandomHorizontalFlip (train only)
 normalize_rgb: false          # ImageNet normalization (enable for pretrained backbones)
+
+# Axe v3.2 Fast-Iteration Mode
+subset_pct: 1.0               # [0.0, 1.0] for rapid auditing (0.1 = 10% data)
+subset_seed: 42
 
 # NYUv2 Specifications (DO NOT MODIFY — matches MTAN standard)
 num_classes: 13               # Semantic segmentation classes

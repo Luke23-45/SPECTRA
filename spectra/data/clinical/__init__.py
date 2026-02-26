@@ -7,7 +7,10 @@ from .dataset import (
     COLUMN_GROUPS
 )
 from .normalizer import ClinicalNormalizer
-from .build_dataset import run_build_pipeline, FEATURE_NAMES
+from .dataset_quality import build_quality_dataset as run_build_pipeline
+
+# Feature Manifest (Clinical 28)
+FEATURE_NAMES = CANONICAL_COLUMNS
 
 __all__ = [
     "ICUTrajectoryDataset",
