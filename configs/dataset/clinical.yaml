@@ -2,7 +2,7 @@
 # Axe v3.2: Standardized Clinical Benchmark Configuration
 
 name: clinical
-dataset_dir: "data/ready"
+dataset_dir: "datasets/sepsis_clinical_28"
 hf_repo: "hellxhell/sepsis-clinical-28"
 sepsis_boost: 10.0
 

@@ -160,9 +160,8 @@ idea/
 # Project Specific
 outputs/
 notes__
-
-
+sepsis_clinical_28
 docs/
 ry.md
-data/
+datasets/
 lightning_logs/
