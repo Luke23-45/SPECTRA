@@ -76,9 +76,16 @@ class PCGradWeighter(BaseWeighter):
         Returns:
             metrics: Conflict statistics for logging.
         """
-        # 1. Compute per-task gradients
+        # 0. CRITICAL FIX: Backward pass for non-shared parameters (task heads)
+        # We must retain the graph because we'll call autograd.grad on it again.
+        total_loss = sum(task_losses)
+        total_loss.backward(retain_graph=True)
+
+        # 1. Compute per-task gradients specifically for the shared backbone
         task_grads = []
         for loss in task_losses:
+            # We must use torch.autograd.grad to get the isolated per-task gradients
+            # without accumulating them into the .grad buffers yet.
             grads = torch.autograd.grad(
                 loss, shared_params,
                 retain_graph=True,

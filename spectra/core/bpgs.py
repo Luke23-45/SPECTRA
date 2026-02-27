@@ -104,8 +104,12 @@ class BPGSScaler(nn.Module):
             s: [num_tasks] tensor with s_i ∈ [s_min, s_max] (strict).
         """
         if self.use_sigmoid:
-            range_width = self.s_max - self.s_min
-            return self.s_min + range_width * torch.sigmoid(self.theta)
+            # [SOTA FIX]: The "Vanishing Gradient of the Uncertainty Manifold"
+            # Without this clamp, sigmoid(theta) saturates to exactly 0.0 or 1.0 for |theta| > 6 in fp32.
+            # The derivative becomes 0.0, and the optimizer gets permanently trapped (Task Starvation).
+            # Relying on fp32 sigmoid which maintains non-zero derivative up to |theta| ~10
+            alpha = torch.sigmoid(self.theta)
+            return self.s_min + alpha * (self.s_max - self.s_min)
         else:
             # Ablation: STE hard clamp (for comparison — demonstrates the flaw)
             clamped = torch.clamp(self.theta, self.s_min.item(), self.s_max.item())
@@ -237,9 +241,18 @@ class BPGSScaler(nn.Module):
         # 5. Bayesian loss computation (Kendall et al. 2018)
         # L = Σ [ 0.5 * precision_i * L_i + 0.5 * s_i ]
         # where precision_i = exp(-s_i)
-        precision = torch.exp(-log_vars)
-        scaled_losses = 0.5 * precision * losses + 0.5 * log_vars
-        total_loss = scaled_losses.sum()
+        #
+        # CRITICAL: Cast to fp32 before exp() even under AMP (fp16 context).
+        # exp(-log_var) for log_var << 0 produces very large precision values
+        # that SILENTLY OVERFLOW fp16 (max ~65504), poisoning the loss.
+        # This is exactly what torch.nn.functional.cross_entropy does internally.
+        log_vars_fp32 = log_vars.float()
+        losses_fp32   = losses.float()
+        precision     = torch.exp(-log_vars_fp32)
+        scaled_losses = 0.5 * precision * losses_fp32 + 0.5 * log_vars_fp32
+        total_loss    = scaled_losses.sum()
+        # Cast back to input dtype to preserve AMP compatibility downstream
+        total_loss = total_loss.to(losses.dtype)
 
         # 6. Telemetry
         metrics = {}

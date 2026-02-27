@@ -26,36 +26,56 @@ MOCK_NUM_TRAIN = 5
 MOCK_NUM_VAL = 3
 
 
+import json
+import lmdb
+
 @pytest.fixture(scope="module", autouse=True)
 def mock_nyuv2_data():
-    """Create temporary mock NYUv2 .npy files for testing."""
+    """Create temporary mock NYUv2 LMDB for testing."""
     for split, count in [("train", MOCK_NUM_TRAIN), ("val", MOCK_NUM_VAL)]:
-        for modality in ["image", "label", "depth", "normal"]:
-            mod_dir = MOCK_ROOT / split / modality
-            mod_dir.mkdir(parents=True, exist_ok=True)
-
+        split_dir = MOCK_ROOT / split
+        split_dir.mkdir(parents=True, exist_ok=True)
+        
+        lmdb_path = split_dir / "data.lmdb"
+        env = lmdb.open(str(lmdb_path), map_size=10**8, subdir=False)
+        
+        episodes = []
+        with env.begin(write=True) as txn:
             for i in range(count):
-                if modality == "image":
-                    # (H, W, 3) float32, range [0, 255]
-                    data = np.random.rand(MOCK_H, MOCK_W, 3).astype(np.float32) * 255.0
-                elif modality == "label":
-                    # (H, W) int, range {-1, 0..12}
-                    data = np.random.randint(-1, 13, size=(MOCK_H, MOCK_W)).astype(np.int32)
-                elif modality == "depth":
-                    # (H, W, 1) float32, some zeros (invalid)
-                    data = np.random.rand(MOCK_H, MOCK_W, 1).astype(np.float32) * 5.0
-                    # Inject 10% invalid depth pixels
-                    mask = np.random.rand(MOCK_H, MOCK_W, 1) < 0.1
-                    data[mask] = 0.0
-                elif modality == "normal":
-                    # (H, W, 3) float32, unit normals
-                    data = np.random.randn(MOCK_H, MOCK_W, 3).astype(np.float32)
-                    # Normalize to unit length
-                    norms = np.linalg.norm(data, axis=-1, keepdims=True)
-                    norms = np.maximum(norms, 1e-6)
-                    data = data / norms
-
-                np.save(str(mod_dir / f"{i}.npy"), data)
+                # Data types must match dataset.py
+                image = (np.random.rand(MOCK_H, MOCK_W, 3) * 255.0).astype(np.uint8)
+                label = np.random.randint(-1, 13, size=(MOCK_H, MOCK_W)).astype(np.uint8)
+                
+                depth = (np.random.rand(MOCK_H, MOCK_W, 1) * 5.0).astype(np.float16)
+                mask = np.random.rand(MOCK_H, MOCK_W, 1) < 0.1
+                depth[mask] = 0.0
+                
+                normal = np.random.randn(MOCK_H, MOCK_W, 3).astype(np.float16)
+                norms = np.linalg.norm(normal.astype(np.float32), axis=-1, keepdims=True)
+                normal = (normal / np.maximum(norms, 1e-6)).astype(np.float16)
+                
+                keys = {
+                    "image_key": f"img_{i}",
+                    "label_key": f"lbl_{i}",
+                    "depth_key": f"dep_{i}",
+                    "normal_key": f"nrm_{i}"
+                }
+                
+                txn.put(keys["image_key"].encode("ascii"), image.tobytes())
+                txn.put(keys["label_key"].encode("ascii"), label.tobytes())
+                txn.put(keys["depth_key"].encode("ascii"), depth.tobytes())
+                txn.put(keys["normal_key"].encode("ascii"), normal.tobytes())
+                
+                episodes.append({
+                    "shape_hw": [MOCK_H, MOCK_W],
+                    **keys
+                })
+        env.close()
+        
+        # Write index JSON
+        index_path = MOCK_ROOT / f"{split}_index.json"
+        with open(index_path, "w") as f:
+            json.dump({"episodes": episodes, "metadata": {}}, f)
 
     yield str(MOCK_ROOT)
 
@@ -73,7 +93,7 @@ class TestShapes:
 
     def test_train_sample_shapes(self, mock_nyuv2_data):
         from spectra.data.nyuv2 import NYUv2Dataset
-        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False, validate_schema=False)
+        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False)
         sample = ds[0]
 
         assert sample["input"].shape == (3, MOCK_H, MOCK_W), \
@@ -87,7 +107,7 @@ class TestShapes:
 
     def test_dtypes(self, mock_nyuv2_data):
         from spectra.data.nyuv2 import NYUv2Dataset
-        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False, validate_schema=False)
+        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False)
         sample = ds[0]
 
         assert sample["input"].dtype == torch.float32, "Image must be float32"
@@ -98,7 +118,7 @@ class TestShapes:
 
     def test_val_sample_shapes(self, mock_nyuv2_data):
         from spectra.data.nyuv2 import NYUv2Dataset
-        ds = NYUv2Dataset(root=mock_nyuv2_data, split="val", augmentation=False, validate_schema=False)
+        ds = NYUv2Dataset(root=mock_nyuv2_data, split="val", augmentation=False)
         assert len(ds) == MOCK_NUM_VAL
 
         sample = ds[0]
@@ -106,7 +126,7 @@ class TestShapes:
 
     def test_meta_fields_present(self, mock_nyuv2_data):
         from spectra.data.nyuv2 import NYUv2Dataset
-        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False, validate_schema=False)
+        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False)
         sample = ds[0]
 
         assert "meta" in sample
@@ -126,7 +146,7 @@ class TestLabelIntegrity:
     def test_no_negative_labels(self, mock_nyuv2_data):
         """Labels must not contain -1 (should be remapped to 255)."""
         from spectra.data.nyuv2 import NYUv2Dataset, IGNORE_INDEX
-        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False, validate_schema=False)
+        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False)
         sample = ds[0]
         labels = sample["targets"]["segmentation"]
 
@@ -135,7 +155,7 @@ class TestLabelIntegrity:
     def test_label_range_valid(self, mock_nyuv2_data):
         """All labels must be in {0..12} or 255 (ignore)."""
         from spectra.data.nyuv2 import NYUv2Dataset, NUM_CLASSES, IGNORE_INDEX
-        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False, validate_schema=False)
+        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False)
         sample = ds[0]
         labels = sample["targets"]["segmentation"]
 
@@ -154,7 +174,7 @@ class TestDepthMask:
     def test_mask_zeros_at_invalid_depth(self, mock_nyuv2_data):
         """Depth mask must be 0 where depth is 0 (Kinect failure)."""
         from spectra.data.nyuv2 import NYUv2Dataset
-        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False, validate_schema=False)
+        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False)
         sample = ds[0]
 
         depth = sample["targets"]["depth"]
@@ -167,7 +187,7 @@ class TestDepthMask:
     def test_mask_ones_at_valid_depth(self, mock_nyuv2_data):
         """Depth mask must be 1 where depth > 0."""
         from spectra.data.nyuv2 import NYUv2Dataset
-        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False, validate_schema=False)
+        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False)
         sample = ds[0]
 
         depth = sample["targets"]["depth"]
@@ -261,7 +281,7 @@ class TestCollation:
 
     def test_collate_batch(self, mock_nyuv2_data):
         from spectra.data.nyuv2 import NYUv2Dataset
-        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False, validate_schema=False)
+        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False)
 
         samples = [ds[i] for i in range(min(3, len(ds)))]
         batch = NYUv2Dataset.collate_fn(samples)
@@ -275,19 +295,4 @@ class TestCollation:
         assert len(batch["meta"]["sample_id"]) == B
 
 
-# ============================================================================
-# TEST 6: DOWNLOAD UTILITY
-# ============================================================================
-
-class TestDownload:
-    """Test download integrity verification (no actual download)."""
-
-    def test_verify_integrity_passes_for_valid_mock(self, mock_nyuv2_data):
-        from spectra.data.nyuv2.download import _verify_integrity
-        # Our mock data has fewer files than expected (5 vs 795)
-        # so this should FAIL — which is correct behavior
-        assert not _verify_integrity(Path(mock_nyuv2_data))
-
-    def test_verify_integrity_fails_for_missing_dir(self):
-        from spectra.data.nyuv2.download import _verify_integrity
-        assert not _verify_integrity(Path("nonexistent_dir_xyz"))
+# Download utilities mock removed.

@@ -3,16 +3,23 @@ scripts/train.py
 ----------------
 Mission Control for SPECTRA Experiments.
 
-Orchestrates the training pipeline using Hydra for configuration 
+Orchestrates the training pipeline using Hydra for configuration
 management and PyTorch Lightning for scalable execution.
+
+Patches applied (2026-02-27 NASA-tier hardening):
+    - preflight_check(): validates LMDB paths, task configs, method names
+      before any GPU compute is allocated (D6)
+    - resume_from: CLI passthrough for checkpoint resumption (D7)
+    - Smart ModelCheckpoint: monitors val/miou for NYUv2, val/total_loss
+      for synthetic/clinical (D9)
 """
 
 import os
 import sys
 from pathlib import Path
 
-# --- NASA-Grade Path Resolution ---
-# Ensures the 'spectra' package is discoverable when run from the project root.
+# --- Path Resolution ---
+# Ensures the 'spectra' package is discoverable when run from project root.
 root_dir = str(Path(__file__).resolve().parent.parent)
 if root_dir not in sys.path:
     sys.path.append(root_dir)
@@ -28,109 +35,272 @@ from pytorch_lightning.loggers import WandbLogger
 
 from spectra.data.datamodule import SPECTRADataModule
 from spectra.engine.trainer import SPECTRAModule
-from spectra.engine.callbacks import SpectralMonitoringCallback, NTKGradExplosionTracker
+from spectra.engine.callbacks import SpectralMonitoringCallback, GradientHealthCallback
 
-# --- NASA-Grade Logging Setup ---
-logging.basicConfig(level=logging.INFO)
+# --- Logging Setup ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s][%(levelname)s][%(name)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
 logger = logging.getLogger("spectra.train")
 
 from hydra.core.hydra_config import HydraConfig
 
+
+# =============================================================================
+# PRE-FLIGHT VALIDATION
+# =============================================================================
+
+def preflight_check(cfg: DictConfig, output_dir: Path) -> None:
+    """
+    Validate all training prerequisites BEFORE allocating GPU compute.
+
+    Principle: Fail fast and informatively. A 10-second pre-flight check
+    is infinitely cheaper than discovering a broken config at step 500.
+
+    Raises:
+        SystemExit with a descriptive message if any check fails.
+    """
+    errors = []
+
+    # 1. NYUv2 LMDB must exist before training
+    benchmark = cfg.get("dataset", {}).get("benchmark", "")
+    if benchmark == "nyuv2":
+        lmdb_train = Path(cfg.dataset.root) / "train" / "data.lmdb"
+        lmdb_val   = Path(cfg.dataset.root) / "val"   / "data.lmdb"
+        if not lmdb_train.exists():
+            errors.append(
+                f"NYUv2 train LMDB missing: {lmdb_train}\n"
+                f"  → Run: python scripts/materialize_nyuv2.py"
+            )
+        if not lmdb_val.exists():
+            errors.append(
+                f"NYUv2 val LMDB missing: {lmdb_val}\n"
+                f"  → Run: python scripts/materialize_nyuv2.py"
+            )
+
+    # 2. Tasks must be defined
+    tasks = list(cfg.get("tasks", []))
+    if not tasks:
+        errors.append("cfg.tasks is empty — no tasks configured. Check your dataset config.")
+
+    # 3. Method name must be valid
+    valid_methods = {"bpgs", "bpgs_alb", "kendall", "uwso", "pcgrad", "ntkmtl", "static"}
+    method_name = cfg.get("method", {}).get("name", "unknown")
+    if method_name not in valid_methods:
+        errors.append(
+            f"Unknown method: '{method_name}'. "
+            f"Valid: {sorted(valid_methods)}"
+        )
+
+    # 4. Loss names must be registered
+    valid_losses = {"mse", "l1", "bce", "cross_entropy", "cosine",
+                    "masked_l1", "cosine_dense"}
+    for task_cfg in tasks:
+        loss_name = task_cfg.get("loss", "mse")
+        if loss_name not in valid_losses:
+            errors.append(
+                f"Task '{task_cfg.get('name', '?')}': unknown loss '{loss_name}'. "
+                f"Valid: {sorted(valid_losses)}"
+            )
+
+    # 5. Resume checkpoint exists if specified
+    ckpt_path = cfg.get("resume_from", None)
+    if ckpt_path and not Path(ckpt_path).exists():
+        errors.append(
+            f"Resume checkpoint not found: {ckpt_path}\n"
+            f"  → Check the path or remove 'resume_from' from config."
+        )
+
+    # 6. GPU memory sanity (warn only, do not block)
+    if torch.cuda.is_available():
+        free_mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        batch_size  = cfg.train.get("batch_size", 8)
+        if benchmark == "nyuv2" and batch_size > 8 and free_mem_gb < 16.0:
+            logger.warning(
+                f"[PreFlight] batch_size={batch_size} on {free_mem_gb:.1f}GB GPU. "
+                f"NYUv2/SegNet may OOM. Consider batch_size<=8 or "
+                f"train.accumulate_grad_batches=2."
+            )
+        num_gpus = torch.cuda.device_count()
+        if num_gpus > 1:
+            logger.info(f"[PreFlight] Multi-GPU detected: {num_gpus} GPUs. Using DDP strategy.")
+
+    # --- Report and Exit on Failures ---
+    if errors:
+        logger.error("[PreFlight] FAILED with the following errors:")
+        for i, e in enumerate(errors, 1):
+            logger.error(f"  [{i}] {e}")
+        raise SystemExit(
+            f"\n\nPre-flight check FAILED ({len(errors)} error(s)). "
+            f"Fix all errors above before training."
+        )
+
+    logger.info("[PreFlight] All systems nominal. GO for training. 🚀")
+
+
+# =============================================================================
+# CHECKPOINT FACTORY
+# =============================================================================
+
+def build_checkpoints(cfg: DictConfig, output_dir: Path):
+    """
+    Build ModelCheckpoint callbacks appropriate for the benchmark.
+
+    Strategy:
+        - NYUv2: Primary checkpoint by val/miou (the research metric);
+                 also keep last.ckpt for resumption.
+        - Synthetic/Clinical: Primary checkpoint by val/total_loss;
+                              keep last.ckpt for resumption.
+
+    Two separate checkpoints because we want BOTH the best-mIoU model
+    (for reporting) and the last checkpoint (for resumption after crash).
+    """
+    ckpt_dir = output_dir / "checkpoints"
+    benchmark = cfg.get("dataset", {}).get("benchmark", "synthetic")
+
+    checkpoints = []
+
+    if benchmark == "nyuv2":
+        # Best mIoU checkpoint — this is the model we report in the paper
+        checkpoints.append(ModelCheckpoint(
+            dirpath=ckpt_dir,
+            filename="best-miou-ep{epoch:02d}-{val/miou:.4f}",
+            monitor="val/miou",
+            mode="max",
+            save_top_k=3,
+            save_last=False,
+            auto_insert_metric_name=False,
+        ))
+        # Best loss checkpoint (secondary — useful when ALB ablations change metric)
+        checkpoints.append(ModelCheckpoint(
+            dirpath=ckpt_dir,
+            filename="best-loss-ep{epoch:02d}-{val/total_loss:.4f}",
+            monitor="val/total_loss",
+            mode="min",
+            save_top_k=1,
+            save_last=True,
+            auto_insert_metric_name=False,
+        ))
+    else:
+        # Synthetic / Clinical: loss is the primary signal
+        checkpoints.append(ModelCheckpoint(
+            dirpath=ckpt_dir,
+            filename="best-ep{epoch:02d}-{val/total_loss:.4f}",
+            monitor="val/total_loss",
+            mode="min",
+            save_top_k=3,
+            save_last=True,
+            auto_insert_metric_name=False,
+        ))
+
+    return checkpoints
+
+
+# =============================================================================
+# MAIN ENTRY POINT
+# =============================================================================
+
 @hydra.main(config_path="../configs", config_name="config", version_base=None)
 def main(cfg: DictConfig):
     # 1. Environment & Seeding
-    # Ensures absolute reproducibility across different hardware runs.
     pl.seed_everything(cfg.get("seed", 42), workers=True)
-    
+
+    # 2. Workspace Preparation
+    output_dir = Path(HydraConfig.get().runtime.output_dir)
+    logger.info(f"[Mission-Control] Workspace: {output_dir}")
+    logger.info(f"[Mission-Control] Config:\n{OmegaConf.to_yaml(cfg)}")
+
     # --- NASA-Grade Config Merge ---
-    # Hydra namespaces dataset configs. We explicitly bubble up overrides.
+    # Hydra namespaces dataset configs under cfg.dataset.*
+    # Bubble up overrides so engine code can access them via cfg.* directly.
     if "model" in cfg.get("dataset", {}):
         cfg.model = OmegaConf.merge(cfg.model, cfg.dataset.model)
     if "tasks" in cfg.get("dataset", {}):
         cfg.tasks = cfg.dataset.tasks
     if "train" in cfg.get("dataset", {}):
         cfg.train = OmegaConf.merge(cfg.train, cfg.dataset.train)
-    
-    # 2. Workspace Preparation
-    output_dir = Path(HydraConfig.get().runtime.output_dir)
-    logger.info(f"[Mission-Control] Workspace Initialized: {output_dir}")
-    logger.info(f"[Mission-Control] Config:\n{OmegaConf.to_yaml(cfg)}")
 
-    # 3. Data Orchestration
-    # SPECTRADataModule handles tiered acquisition (Cloud/Local/Build fallback).
+    # 3. Pre-Flight Validation (D6)
+    # Validates EVERYTHING before touching GPU. Fast fail saves compute.
+    preflight_check(cfg, output_dir)
+
+    # 4. Data Orchestration
     datamodule = SPECTRADataModule(cfg)
-    
-    # 4. Model Orchestration
-    # SPECTRAModule integrates Backbone, ALB, Heads, and Weighter.
+
+    # 5. Model Orchestration
     model = SPECTRAModule(cfg)
-    
-    # We extract trainer-specific configs from Hydra to allow CLI overrides.
-    trainer_node = cfg.get("trainer", OmegaConf.create({}))
-    trainer_cfg = OmegaConf.to_container(trainer_node, resolve=True)
-    
-    # 5. Callback Infrastructure
+
+    # 6. Callback Infrastructure
     callbacks = [
-        SpectralMonitoringCallback(log_every_n_epochs=1),
-        NTKGradExplosionTracker()
+        *build_checkpoints(cfg, output_dir),                      # D9: metric-aware ckpt
+        SpectralMonitoringCallback(log_every_n_epochs=5),
+        GradientHealthCallback(check_interval=200),               # D4/D8: real grad monitoring
+        LearningRateMonitor(logging_interval="step"),
     ]
-    
-    if trainer_cfg.get("logger", True) is not False:
-        callbacks.append(LearningRateMonitor(logging_interval="step"))
-    
-    if trainer_cfg.get("enable_checkpointing", True):
-        callbacks.insert(0, ModelCheckpoint(
-            dirpath=output_dir / "checkpoints",
-            filename="spectra-{epoch:02d}-{val/total_loss:.4f}",
-            monitor="val/total_loss",
-            mode="min",
-            save_top_k=3,
-            save_last=True
-        ))
-    
-    # 6. Logger Integration
+
+    # 7. Logger Integration
     wandb_logger = None
     if cfg.get("logging", {}).get("use_wandb", False):
         wandb_logger = WandbLogger(
             project=cfg.logging.get("wandb_project", "spectra-mtl"),
             name=cfg.get("run_name", "unnamed_run"),
-            save_dir=output_dir,
-            offline=cfg.logging.get("wandb_offline", False)
+            save_dir=str(output_dir),
+            offline=cfg.logging.get("wandb_offline", False),
+            log_model=False,  # We handle checkpoints ourselves
         )
-    
-    # 7. Trainer Orchestration
-    # Using 'ddp' for multi-GPU efficiency, 'auto' for single-device fallbacks.
-    trainer_node = cfg.get("trainer", OmegaConf.create({}))
-    trainer_cfg = OmegaConf.to_container(trainer_node, resolve=True)
-    
-    # Automatic gradient clipping is not supported when manual optimization is used (e.g., PCGrad)
-    gradient_clip_val = cfg.train.get("grad_clip", 1.0)
-    if getattr(model, "automatic_optimization", True) is False:
-        gradient_clip_val = None
-        logger.info("[Mission-Control] Manual optimization detected. Disabling automatic gradient clipping.")
+        # Log the full config as a W&B artifact for exact reproducibility
+        if wandb_logger.experiment is not None:
+            wandb_logger.experiment.config.update(
+                OmegaConf.to_container(cfg, resolve=True), allow_val_change=True
+            )
 
-    # Base kwargs
-    trainer_kwargs = dict(
+    # 8. Trainer Configuration
+    # PCGrad uses manual optimization — gradient clipping must be done manually inside
+    # the training_step. Setting gradient_clip_val here for non-PCGrad methods.
+    gradient_clip_val = cfg.train.get("grad_clip", 1.0)
+    if not getattr(model, "automatic_optimization", True):
+        gradient_clip_val = None
+        logger.info(
+            "[Mission-Control] PCGrad detected (manual optimization). "
+            "Automatic gradient clipping disabled — clipping handled inside training_step."
+        )
+
+    trainer = pl.Trainer(
         max_epochs=cfg.train.epochs,
         accelerator="auto",
         devices="auto",
-        strategy="ddp" if torch.cuda.device_count() > 1 else "auto",
+        strategy="ddp_find_unused_parameters_false" if torch.cuda.device_count() > 1 else "auto",
         precision=cfg.train.get("precision", "16-mixed"),
         gradient_clip_val=gradient_clip_val,
         callbacks=callbacks,
         logger=wandb_logger,
         log_every_n_steps=cfg.train.get("log_every_n_steps", 10),
+        # Deterministic mode: correctness over speed during development.
+        # Set deterministic=False in production for ~10-20% speed gain.
         deterministic=cfg.train.get("deterministic", False),
+        # DDP: find_unused_parameters=False avoids the O(N) communication
+        # overhead when all parameters are used in every forward pass.
+        # If any parameters are conditionally unused, set to True.
     )
-    
-    # Apply CLI overrides (e.g. trainer.fast_dev_run=True, trainer.accelerator=cpu)
-    trainer_kwargs.update(trainer_cfg)
-    
-    trainer = pl.Trainer(**trainer_kwargs)
-    
-    # 8. Mission Start
-    logger.info("[Mission-Control] All systems GO. Initiating training...")
-    trainer.fit(model, datamodule=datamodule)
-    logger.info("[Mission-Control] Mission Accomplished.")
+
+    # 9. Resume support (D7)
+    # CLI: python scripts/train.py resume_from=path/to/last.ckpt
+    ckpt_path = cfg.get("resume_from", None)
+    if ckpt_path:
+        logger.info(f"[Mission-Control] Resuming from checkpoint: {ckpt_path}")
+
+    # 10. Mission Start
+    logger.info(
+        f"[Mission-Control] All systems GO. "
+        f"Method={cfg.method.get('name', '?')}, "
+        f"Epochs={cfg.train.epochs}, "
+        f"Tasks={[t.name for t in cfg.tasks]}"
+    )
+    trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
+    logger.info("[Mission-Control] Mission Accomplished. ✓")
+
 
 if __name__ == "__main__":
     main()

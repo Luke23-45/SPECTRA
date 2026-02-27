@@ -249,10 +249,9 @@ class SpatialALB(nn.Module):
         self.d_model = d_model
 
         # 1. Volatility Gate (2D): Detects sharp feature areas (edges)
-        self.gate = nn.Sequential(
-            nn.Conv2d(d_model, 1, kernel_size=1),
-            nn.Sigmoid(),
-        )
+        # Gating mechanism
+        # [SOTA Fix]: Gate must see both smooth trunk AND sharp expert to resolve edges perfectly
+        self.gate_conv = nn.Conv2d(d_model * 2, 1, kernel_size=1)
 
         # 2. Expert Path (High-Freq): Dilated context extraction
         self.expert = nn.Sequential(
@@ -282,20 +281,23 @@ class SpatialALB(nn.Module):
         Returns:
             Dict containing planner and expert manifolds.
         """
-        # 1. Primary Encoding Path (Smooth Trunk)
-        x_trunk = self.encoder(x, **encoder_kwargs)
-
-        # CRITICAL: Gradient Divorce
+        # 1. Trunk Forward (Smooth Manifold)
+        x_trunk = self.encoder(x, **encoder_kwargs)  # [B, D, H, W]
         x_detached = x_trunk.detach()
 
-        # 2. Compute Spatial Gating Map
-        gate_map = self.gate(x_detached)  # [B, 1, H, W]
-
-        # 3. Extract High-Freq Residuals
+        # 2. Extract High-Freq Residuals FIRST
         expert_res = self.expert(x_detached)  # [B, D, H, W]
 
+        # 3. Compute Spatial Volatility Gate (from combined smooth + sharp context)
+        # [SOTA FIX]: Solves the 'Blurry Gate Contradiction'. The gate must “see” the sharp 
+        # edges extracted by the expert to know exactly where to inject them.
+        gate_input = torch.cat([x_detached, expert_res], dim=1)
+        gate_map = torch.sigmoid(self.gate_conv(gate_input))  # [B, 1, H, W]
+
         # 4. Injection: Trunk + (Gate * Expert_Residual)
-        ctx_expert = x_trunk + (gate_map * expert_res)
+        # CRITICAL FIX: Must add to x_detached, not x_trunk. Otherwise gradients
+        # flow from the expert branch back into the trunk, violating gradient divorce.
+        ctx_expert = x_detached + (gate_map * expert_res)
 
         # [v3.2 Spec] Cache for Spectral Monitoring Callback (Spatial Mean Pool)
         # Note: We pool to [B, D] to allow 1D FFT over the representation dim.

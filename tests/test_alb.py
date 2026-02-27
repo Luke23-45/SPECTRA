@@ -3,12 +3,14 @@ tests/test_alb.py
 -----------------
 Unit tests for ALB (Asymmetric Latent Bottleneck).
 
-Tests:
-    1. Shape consistency
-    2. Gradient divorce verification
-    3. Representational divergence
-    4. Expert initialization check
-    5. Mask handling
+Output key names (actual implementation):
+    "planner"        - [B, T, D] low-freq context
+    "planner_global" - [B, D]    pooled planner
+    "expert"         - [B, T, D] high-freq context
+    "expert_global"  - [B, D]    pooled expert
+
+Note: The original plan doc used ctx_planner/global_planner/ctx_expert/global_expert.
+These were incorrect (old spec vs actual alb.py). This file uses the real key names.
 """
 
 import pytest
@@ -23,7 +25,7 @@ from spectra.backbones.shared_trunk import SharedTrunk
 
 
 def _make_alb(input_dim=20, d_model=64, n_expert_layers=2, n_heads=4):
-    """Helper to create an ALB with a mock encoder."""
+    """Helper to create an ALB with a SharedTrunk encoder."""
     encoder = SharedTrunk(input_dim=input_dim, d_model=d_model, n_layers=2)
     return AsymmetricLatentBottleneck(
         encoder=encoder,
@@ -45,10 +47,16 @@ class TestALBShapes:
         x = torch.randn(B, T, D_in)
         out = alb(x)
 
-        assert out["ctx_planner"].shape == (B, T, D)
-        assert out["global_planner"].shape == (B, D)
-        assert out["ctx_expert"].shape == (B, T, D)
-        assert out["global_expert"].shape == (B, D)
+        # Verify correct key names (CRITICAL: these are the actual keys)
+        assert "planner"        in out, f"Missing 'planner'. Got keys: {list(out.keys())}"
+        assert "planner_global" in out, f"Missing 'planner_global'. Got keys: {list(out.keys())}"
+        assert "expert"         in out, f"Missing 'expert'. Got keys: {list(out.keys())}"
+        assert "expert_global"  in out, f"Missing 'expert_global'. Got keys: {list(out.keys())}"
+
+        assert out["planner"].shape        == (B, T, D), f"planner shape: {out['planner'].shape}"
+        assert out["planner_global"].shape == (B, D),    f"planner_global shape: {out['planner_global'].shape}"
+        assert out["expert"].shape         == (B, T, D), f"expert shape: {out['expert'].shape}"
+        assert out["expert_global"].shape  == (B, D),    f"expert_global shape: {out['expert_global'].shape}"
 
     def test_output_shapes_with_mask(self):
         B, T, D_in, D = 4, 10, 20, 64
@@ -58,12 +66,12 @@ class TestALBShapes:
         mask[:, -3:] = True  # Last 3 positions padded
 
         out = alb(x, mask=mask)
-        assert out["ctx_planner"].shape == (B, T, D)
-        assert out["ctx_expert"].shape == (B, T, D)
+        assert out["planner"].shape == (B, T, D)
+        assert out["expert"].shape  == (B, T, D)
 
 
 class TestGradientDivorce:
-    """Test 2: Expert gradients do NOT flow to encoder."""
+    """Test 2: Expert gradients do NOT flow to encoder (gradient divorce)."""
 
     def test_encoder_receives_no_expert_gradients(self):
         alb, encoder = _make_alb()
@@ -71,7 +79,7 @@ class TestGradientDivorce:
         out = alb(x)
 
         # Only backprop through expert output
-        loss = out["ctx_expert"].sum()
+        loss = out["expert"].sum()
         loss.backward()
 
         for name, p in encoder.named_parameters():
@@ -86,7 +94,7 @@ class TestGradientDivorce:
         out = alb(x)
 
         # Backprop through planner output — encoder SHOULD get gradients
-        loss = out["ctx_planner"].sum()
+        loss = out["planner"].sum()
         loss.backward()
 
         has_grad = any(
@@ -104,16 +112,16 @@ class TestRepresentationalDivergence:
         x = torch.randn(4, 10, 20)
         out = alb(x)
 
-        divergence = (out["ctx_planner"] - out["ctx_expert"]).abs().mean().item()
-        assert divergence > 0.0, "COLLAPSE: planner == expert"
+        divergence = (out["planner"] - out["expert"]).abs().mean().item()
+        assert divergence > 0.0, "COLLAPSE: planner == expert (spectral decoupling failed)"
 
     def test_globals_differ(self):
         alb, _ = _make_alb()
         x = torch.randn(4, 10, 20)
         out = alb(x)
 
-        divergence = (out["global_planner"] - out["global_expert"]).abs().mean().item()
-        assert divergence > 0.0, "COLLAPSE: global_planner == global_expert"
+        divergence = (out["planner_global"] - out["expert_global"]).abs().mean().item()
+        assert divergence > 0.0, "COLLAPSE: planner_global == expert_global"
 
 
 class TestExpertInitialization:
@@ -124,12 +132,11 @@ class TestExpertInitialization:
         for name, module in alb.expert_proj.named_modules():
             if isinstance(module, nn.Linear):
                 W = module.weight.data
-                if W.shape[0] == W.shape[1]:  # Square weight matrix
+                if W.shape[0] == W.shape[1]:  # Square weight matrix only
                     WTW = W.T @ W
                     identity = torch.eye(W.shape[1])
                     error = (WTW - identity).abs().mean().item()
-                    # Orthogonality with gain=1.2 means WTW ≈ 1.44*I, not I
-                    # Just verify it's not random garbage (error < 1.5)
+                    # With gain=1.2: WTW ≈ 1.44*I, not I. Error < 2.0 confirms structure.
                     assert error < 2.0, f"Orthogonal init failed for {name}: error={error}"
 
 
@@ -145,7 +152,7 @@ class TestMaskHandling:
 
         out = alb(x, mask=mask)
         # Masked positions in expert should be zero
-        expert_masked = out["ctx_expert"][:, -3:, :]
+        expert_masked = out["expert"][:, -3:, :]
         assert expert_masked.abs().sum() == 0, "Masked expert positions should be zero"
 
 

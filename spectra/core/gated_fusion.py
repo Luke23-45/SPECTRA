@@ -271,8 +271,12 @@ class VolatilityAwareGate(nn.Module):
             gate: [B, T, D] gate values in [0, 1].
         """
         # Temporal volatility: |x_t - x_{t-1}|
-        x_shifted = F.pad(raw_input[:, :-1, :], (0, 0, 1, 0))
-        delta = (raw_input - x_shifted).abs().mean(dim=-1, keepdim=True)  # [B, T, 1]
+        # [SOTA FIX]: Prevent T=1 degeneracy where |x_0 - 0| equals arbitrary magnitude.
+        if raw_input.shape[1] == 1:
+            delta = torch.zeros(raw_input.shape[0], 1, 1, device=raw_input.device)
+        else:
+            x_shifted = F.pad(raw_input[:, :-1, :], (0, 0, 1, 0))
+            delta = (raw_input - x_shifted).abs().mean(dim=-1, keepdim=True)  # [B, T, 1]
 
         # Per-channel volatility embedding
         vol_embed = self.volatility_proj(delta)  # [B, T, D]

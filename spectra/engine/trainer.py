@@ -27,6 +27,7 @@ from spectra.baselines.pcgrad import PCGradWeighter
 from spectra.backbones.shared_trunk import SharedTrunk
 from spectra.heads.task_heads import RegressionHead, ClassificationHead
 from spectra.engine.schedulers import get_cosine_schedule_with_warmup
+from spectra.evaluation.metrics import SegmentationMetrics, DepthMetrics, NormalMetrics
 
 logger = logging.getLogger("spectra.trainer")
 
@@ -171,6 +172,45 @@ class SPECTRAModule(pl.LightningModule):
             f"[SPECTRA] Initialized: backbone={cfg.model.get('backbone', 'shared_trunk')}, "
             f"method={cfg.method.name}, ALB={self.use_alb}, tasks={self.num_tasks}"
         )
+
+        # ─── 5. Initialize Task Metrics ─────────────────────────
+        # Metrics are initialized here so they are always available,
+        # even before the first validation epoch.
+        self._init_metrics()
+
+    def _init_metrics(self) -> None:
+        """
+        Initialize per-task evaluation metric accumulators.
+
+        Detects which tasks are present in the config and creates the
+        appropriate metric object. Non-NYUv2 tasks get no metric object
+        (losses suffice for synthetic/clinical stop-go decisions).
+        """
+        self._val_metrics: Dict[str, Any] = {}
+        num_classes = 13
+        ignore_idx  = 255
+
+        for task_cfg in self.cfg.tasks:
+            name = task_cfg.name
+            t    = task_cfg.get("type", "regression")
+
+            if name == "segmentation" or t == "dense_classification":
+                num_classes = task_cfg.get("num_classes", 13)
+                ignore_idx  = task_cfg.get("ignore_index", 255)
+                self._val_metrics[name] = SegmentationMetrics(
+                    num_classes=num_classes, ignore_index=ignore_idx
+                )
+            elif name == "depth" or (t == "dense_regression" and task_cfg.get("output_dim", 1) == 1
+                                     and "depth" in name):
+                self._val_metrics[name] = DepthMetrics(max_depth=10.0)
+            elif name == "normals" or (t == "dense_regression" and "normal" in name):
+                self._val_metrics[name] = NormalMetrics()
+            # Scalar regression/classification tasks: loss serves as proxy metric.
+
+        if self._val_metrics:
+            logger.info(
+                f"[SPECTRA] Task metrics initialized: {list(self._val_metrics.keys())}"
+            )
 
     # =================================================================
     # FORWARD
@@ -327,7 +367,7 @@ class SPECTRAModule(pl.LightningModule):
 
         total_val_loss = torch.tensor(0.0, device=self.device)
         for name in self.task_names:
-            pred = predictions[name]
+            pred   = predictions[name]
             target = batch["targets"][name]
 
             # Shape alignment (for scalar tasks only)
@@ -346,7 +386,86 @@ class SPECTRAModule(pl.LightningModule):
             self.log(f"val/{name}_loss", loss, sync_dist=True, prog_bar=False)
             total_val_loss = total_val_loss + loss
 
+            # ── Accumulate task metrics (no compute yet — done at epoch end) ──
+            if name in self._val_metrics:
+                metric_obj = self._val_metrics[name]
+                if isinstance(metric_obj, SegmentationMetrics):
+                    metric_obj.update(pred, target)
+                elif isinstance(metric_obj, DepthMetrics):
+                    # Pass depth_mask from meta if available
+                    mask = batch.get("meta", {}).get("depth_mask", None)
+                    metric_obj.update(pred, target, mask=mask)
+                elif isinstance(metric_obj, NormalMetrics):
+                    metric_obj.update(pred, target)
+
         self.log("val/total_loss", total_val_loss, sync_dist=True, prog_bar=True)
+
+    # =================================================================
+    # VALIDATION EPOCH HOOKS
+    # =================================================================
+
+    def on_validation_epoch_start(self) -> None:
+        """Reset all metric accumulators at the start of each val epoch."""
+        for m in self._val_metrics.values():
+            m.reset()
+
+    def on_validation_epoch_end(self) -> None:
+        """
+        Aggregate accumulated per-batch metrics and log to W&B / console.
+
+        This is the only place where final metric values are computed.
+        Runs on rank 0 only (metrics are CPU-side and not distributed).
+        """
+        if not self._val_metrics:
+            return
+
+        # ── Segmentation: mIoU ──────────────────────────────────────
+        for name, metric_obj in self._val_metrics.items():
+            if isinstance(metric_obj, SegmentationMetrics):
+                r = metric_obj.compute()
+                self.log(f"val/{name}_miou",           r["miou"],           prog_bar=True,  sync_dist=False)
+                self.log(f"val/{name}_pixel_acc",      r["pixel_acc"],      prog_bar=False, sync_dist=False)
+                self.log(f"val/{name}_mean_class_acc", r["mean_class_acc"], prog_bar=False, sync_dist=False)
+                # Convenience alias for ModelCheckpoint monitor
+                if name == "segmentation":
+                    self.log("val/miou", r["miou"], prog_bar=True, sync_dist=False)
+                logger.info(
+                    f"[Val] {name}: mIoU={r['miou']:.4f}, "
+                    f"PixAcc={r['pixel_acc']:.4f}, "
+                    f"N_classes={r['n_valid_classes']}"
+                )
+
+            elif isinstance(metric_obj, DepthMetrics):
+                r = metric_obj.compute()
+                self.log(f"val/{name}_abs_rel",  r["abs_rel"],  prog_bar=True,  sync_dist=False)
+                self.log(f"val/{name}_rmse",      r["rmse"],     prog_bar=False, sync_dist=False)
+                self.log(f"val/{name}_delta_1",   r["delta_1"],  prog_bar=False, sync_dist=False)
+                self.log(f"val/{name}_log_rmse",  r["log_rmse"], prog_bar=False, sync_dist=False)
+                if name == "depth":
+                    self.log("val/depth_abs_rel", r["abs_rel"], prog_bar=True, sync_dist=False)
+                logger.info(
+                    f"[Val] {name}: abs_rel={r['abs_rel']:.4f}, "
+                    f"RMSE={r['rmse']:.4f}, δ<1.25={r['delta_1']:.4f}"
+                )
+
+            elif isinstance(metric_obj, NormalMetrics):
+                r = metric_obj.compute()
+                self.log(f"val/{name}_mean_angle",   r["mean_angle_deg"],   prog_bar=True,  sync_dist=False)
+                self.log(f"val/{name}_median_angle",  r["median_angle_deg"], prog_bar=False, sync_dist=False)
+                self.log(f"val/{name}_within_11_25",  r["within_11_25"],     prog_bar=False, sync_dist=False)
+                if name == "normals":
+                    self.log("val/normals_mean_angle", r["mean_angle_deg"], prog_bar=True, sync_dist=False)
+                logger.info(
+                    f"[Val] {name}: mean_angle={r['mean_angle_deg']:.2f}°, "
+                    f"<11.25°={r['within_11_25']:.4f}"
+                )
+
+        # ── B-PGS Telemetry at Epoch End ────────────────────────────
+        if hasattr(self.weighter, "get_telemetry"):
+            tel = self.weighter.get_telemetry()
+            for i, lv in enumerate(tel.get("log_vars", [])):
+                self.log(f"val/bpgs_log_var_{i}", lv, sync_dist=False)
+
 
     # =================================================================
     # OPTIMIZER & SCHEDULER
