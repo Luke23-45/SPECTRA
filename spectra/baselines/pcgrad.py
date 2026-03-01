@@ -90,10 +90,13 @@ class PCGradWeighter(BaseWeighter):
         # We must use torch.autograd.grad even if backward was called,
         # to get the isolated per-task components for projection.
         task_grads = []
-        for loss in task_losses:
+        for idx, loss in enumerate(task_losses):
+            # [SOTA Fix: Instant GC] Force PyTorch to instantly free the massive  
+            # computational graph buffers on the final task, rather than waiting for Python's GC.
+            is_last = (idx == len(task_losses) - 1)
             grads = torch.autograd.grad(
                 loss, shared_params,
-                retain_graph=True,
+                retain_graph=not is_last,
                 allow_unused=True,
             )
             # Flatten all parameter grads into a single vector

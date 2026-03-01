@@ -122,11 +122,14 @@ class NTKMTLWeighter(BaseWeighter):
         requires an active computation graph.
         """
         norms = []
-        for i in range(self.num_tasks):
+        for idx, i in enumerate(range(self.num_tasks)):
+            # [SOTA Fix: Instant GC] Force PyTorch to free massive computational graph buffers instantly
+            is_last = (idx == self.num_tasks - 1)
+            
             # Compute gradient norm for each task (fully asynchronous)
             grads = torch.autograd.grad(
                 losses[i], shared_params,
-                retain_graph=True,
+                retain_graph=not is_last,
                 allow_unused=True,
             )
             # Use torch.tensor(0.0) fallback to guarantee tensor outputs for sum

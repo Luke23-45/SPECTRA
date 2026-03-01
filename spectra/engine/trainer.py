@@ -225,7 +225,19 @@ class SPECTRAModule(pl.LightningModule):
                 self._val_metrics[name] = DepthMetrics(max_depth=10.0)
             elif name == "normals" or (t == "dense_regression" and "normal" in name):
                 self._val_metrics[name] = NormalMetrics()
-            # Scalar regression/classification tasks: loss serves as proxy metric.
+            elif name == "outcome" and t == "classification":
+                # [SOTA Fix] Restoring Sepsis classification metrics to Validation!
+                self._val_metrics[name] = MetricCollection({
+                    "AUC": BinaryAUROC(),
+                    "PRC": BinaryAveragePrecision(),
+                    "R": BinaryRecall()
+                })
+            elif t == "classification" and task_cfg.get("num_classes", 1) > 1:
+                nc = task_cfg["num_classes"]
+                self._val_metrics[name] = MetricCollection({
+                    "ACC": MulticlassAccuracy(num_classes=nc),
+                    "AUC": MulticlassAUROC(num_classes=nc)
+                })
 
         if self._val_metrics:
             logger.info(
@@ -377,9 +389,9 @@ class SPECTRAModule(pl.LightningModule):
 
         # Logging (Live updates for the standard TQDM bar)
         bsz = batch.get("input").shape[0]
-        self.log("train/total_loss", total_loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True, batch_size=bsz)
+        self.log("train/total_loss", total_loss.detach(), prog_bar=True, on_step=True, on_epoch=True, sync_dist=True, batch_size=bsz)
         for name, loss in loss_dict.items():
-            self.log(f"train/{name}_loss", loss, on_step=False, on_epoch=True, sync_dist=True, batch_size=bsz)
+            self.log(f"train/{name}_loss", loss.detach(), on_step=False, on_epoch=True, sync_dist=True, batch_size=bsz)
             # (train_metrics updates removed due to O(N^2) complexity; AUC handled strictly in validation)
 
         for key, val in w_metrics.items():
@@ -436,6 +448,11 @@ class SPECTRAModule(pl.LightningModule):
                     metric_obj.update(pred, target, mask=mask)
                 elif isinstance(metric_obj, NormalMetrics):
                     metric_obj.update(pred, target)
+                elif isinstance(metric_obj, MetricCollection):
+                    # [SOTA Fix] Accumulate classification metrics (AUC/PRC)
+                    p = pred.squeeze(-1) if pred.dim() > 1 and pred.shape[-1] == 1 else pred
+                    t = target.squeeze(-1) if target.dim() > 1 and target.shape[-1] == 1 else target
+                    metric_obj.update(p, t.long())
 
         self.log("val/total_loss", total_val_loss, sync_dist=True, prog_bar=True, batch_size=batch.get("input").shape[0])
 
@@ -498,6 +515,19 @@ class SPECTRAModule(pl.LightningModule):
                     f"[Val] {name}: mean_angle={r['mean_angle_deg']:.2f} degrees, "
                     f"<11.25 degrees={r['within_11_25']:.4f}"
                 )
+
+            elif isinstance(metric_obj, MetricCollection):
+                # [SOTA Fix] Compute global AUC/PRC for the epoch
+                m_out = metric_obj.compute()
+                for m_name, val in m_out.items():
+                    self.log(f"val/{name}_{m_name}", val, prog_bar=True, sync_dist=False)
+                
+                # Global alias for the SOTA Bar
+                if "AUC" in m_out:
+                    self.log("val/AUC", m_out["AUC"], prog_bar=True, sync_dist=False)
+                
+                log_strs = [f"{k}={v:.4f}" for k, v in m_out.items()]
+                logger.info(f"[Val] {name}: " + ", ".join(log_strs))
 
         # ── B-PGS Telemetry at Epoch End ────────────────────────────
         if hasattr(self.weighter, "get_telemetry"):
