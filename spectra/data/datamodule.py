@@ -124,7 +124,8 @@ class SPECTRADataModule(pl.LightningDataModule):
                 num_workers=num_workers,
                 collate_fn=robust_collate_fn,
                 pin_memory=True,
-                drop_last=True
+                drop_last=True,
+                persistent_workers=(num_workers > 0)
             )
         
         # Others (Vision/Synthetic)
@@ -146,7 +147,8 @@ class SPECTRADataModule(pl.LightningDataModule):
             num_workers=num_workers,
             collate_fn=collate_fn,
             pin_memory=True,
-            drop_last=True
+            drop_last=True,
+            persistent_workers=(num_workers > 0)
         )
 
     def val_dataloader(self):
@@ -164,5 +166,6 @@ class SPECTRADataModule(pl.LightningDataModule):
             shuffle=False,
             num_workers=self.cfg.train.get("num_workers", 4),
             collate_fn=collate_fn,
-            pin_memory=True
+            pin_memory=True,
+            persistent_workers=(self.cfg.train.get("num_workers", 4) > 0)
         )

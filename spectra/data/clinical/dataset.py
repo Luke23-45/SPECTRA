@@ -186,6 +186,7 @@ class ICUTrajectoryDataset(Dataset):
         self.history_len = history_len
         self.pred_len = pred_len
         self.window_size = history_len + pred_len
+        self.subset_pct = subset_pct
         
         # Paths
         self.root_path = Path(dataset_dir) / split
@@ -682,9 +683,10 @@ def create_sepsis_aware_sampler(
     weights = torch.ones(n_samples)
     
     # [v2026 SOTA FIX] Sampler I/O Race Protection (Smoking Gun #RaceCondition)
-    # Rationale: Prevents parallel DDP workers from thumping I/O or corrupting indices.
+    # Rationale: Prevents parallel workers or different subset runs from thumping I/O.
     rank = get_rank()
-    index_name = f"{dataset.split}_sepsis_index.npy"
+    subset_str = getattr(dataset, "subset_pct", 1.0)
+    index_name = f"{dataset.split}_sepsis_index_sub{subset_str}.npy"
     index_path = dataset.root_path / index_name
     
     # 1. Wait-to-Load Logic for non-zero ranks

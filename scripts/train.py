@@ -229,6 +229,7 @@ class SOTAProgressBar(TQDMProgressBar):
             "health/backbone_grad_norm": "GN",
             "pcgrad/total_conflicts": "C",
             "spectral/hf_divorce_index": "D",
+            "health/backbone_weight_norm": "WN",
             "val/total_loss": "vL",
             "train/AUC": "AUC",
             "train/PRC": "PRC",

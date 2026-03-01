@@ -189,29 +189,14 @@ class SPECTRAModule(pl.LightningModule):
         self._init_train_metrics()
 
     def _init_train_metrics(self) -> None:
-        """Initialize real-time metrics for the training progress bar."""
+        """Initialize real-time metrics for the training progress bar.
+        NOTE: Heavy rank-based metrics (AUC, PRC) are disabled here to prevent
+        O(N^2) accumulation slowdowns during the training epoch. They are correctly
+        computed per-epoch during validation.
+        """
         self.train_metrics = nn.ModuleDict()
-        if not HAS_TORCHMETRICS:
-            return
-
-        for task_cfg in self.cfg.tasks:
-            name = task_cfg.name
-            t = task_cfg.get("type", "regression")
-            
-            # Sepsis Clinical (Binary Classification)
-            if name == "outcome" and t == "classification":
-                self.train_metrics[name] = MetricCollection({
-                    "AUC": BinaryAUROC(),
-                    "PRC": BinaryAveragePrecision(),
-                    "R": BinaryRecall()
-                })
-            # Multi-class tasks (e.g. Clinical Phase)
-            elif t == "classification" and task_cfg.get("num_classes", 1) > 1:
-                nc = task_cfg["num_classes"]
-                self.train_metrics[name] = MetricCollection({
-                    "ACC": MulticlassAccuracy(num_classes=nc),
-                    "AUC": MulticlassAUROC(num_classes=nc)
-                })
+        # Removed BinaryAUROC and BinaryAveragePrecision from training step
+        # to guarantee 14+ it/s throughput.
 
     def _init_metrics(self) -> None:
         """
@@ -332,31 +317,29 @@ class SPECTRAModule(pl.LightningModule):
 
             opt.zero_grad()
 
-            # Step 1: PCGrad projects gradients onto shared params
-            # When ALB is enabled, backbone is wrapped inside alb.encoder.
-            # We need to pass backbone params (the actual shared trunk).
+            bsz = batch.get("input").shape[0]
+            total_loss = losses_tensor.sum()
+            
+            # [Axe AMP Surgery] Retrieve current scale before manual_backward
+            # This ensures backbone projection parity with the head gradients.
+            scaler = getattr(self.trainer.precision_plugin, "scaler", None)
+            current_scale = 1.0
+            if scaler is not None and hasattr(scaler, "get_scale"):
+                current_scale = scaler.get_scale()
+
+            # Step 1: Initial backward via PTL (Handles Heads + Scaler Initialization)
+            # We MUST retain the graph for PCGrad's subsequent per-task autograd.grad calls.
+            self.manual_backward(total_loss, retain_graph=True)
+
+            # Step 2: PCGrad projection (Backbone Only)
+            # We skip the internal backward since we just did it via PTL.
             shared_params_for_pcgrad = list(self.backbone.parameters())
             pcgrad_metrics = self.weighter.backward_and_project(
                 task_loss_list,
                 shared_params_for_pcgrad,
+                skip_backward=True,
+                scale=current_scale
             )
-
-            # Step 2: Save the projected backbone grads (PCGrad spent O(N²P) computing these)
-            saved_backbone_grads = {
-                id(p): p.grad.clone() for p in self.backbone.parameters()
-                if p.grad is not None
-            }
-
-            # Step 3: Backward through heads to get gradients for head params
-            # This WILL overwrite backbone grads — that's why we saved them above
-            head_loss = losses_tensor.sum()
-            self.manual_backward(head_loss)
-
-            # Step 4: Restore projected backbone grads (overwriting the naive ones)
-            for p in self.backbone.parameters():
-                pid = id(p)
-                if pid in saved_backbone_grads:
-                    p.grad = saved_backbone_grads[pid]
 
             if self.cfg.train.get("grad_clip", 0) > 0:
                 self.clip_gradients(opt, gradient_clip_val=self.cfg.train.grad_clip)
@@ -370,12 +353,12 @@ class SPECTRAModule(pl.LightningModule):
             # --- 5. Live Grad Norm (GN) & Conflicts (C) for SOTA Bar ---
             # Extract total conflict count
             conflicts = pcgrad_metrics.get("pcgrad/total_conflicts", 0)
-            self.log("pcgrad/total_conflicts", conflicts, prog_bar=True, on_step=True, batch_size=batch.get("input").shape[0])
+            self.log("pcgrad/total_conflicts", conflicts, prog_bar=True, on_step=True, batch_size=bsz)
             
             # Calculate backbone grad norm
             shared_params = list(self.backbone.parameters())
             gn = torch.norm(torch.stack([p.grad.detach().norm(2) for p in shared_params if p.grad is not None]), 2)
-            self.log("health/backbone_grad_norm", gn, prog_bar=True, on_step=True, batch_size=batch.get("input").shape[0])
+            self.log("health/backbone_grad_norm", gn, prog_bar=True, on_step=True, batch_size=bsz)
         else:
             # ─── Standard optimization path ───────────────────
             shared_params = list(self.backbone.parameters())
@@ -397,23 +380,7 @@ class SPECTRAModule(pl.LightningModule):
         self.log("train/total_loss", total_loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True, batch_size=bsz)
         for name, loss in loss_dict.items():
             self.log(f"train/{name}_loss", loss, on_step=False, on_epoch=True, sync_dist=True, batch_size=bsz)
-            
-            # Update and log live research metrics
-            if name in self.train_metrics:
-                target = batch["targets"][name]
-                pred = predictions[name]
-                
-                # SOTA Shape Squeezer (Standardizes [N, 1] to [N] for binary metrics)
-                if target.dim() > 1 and target.shape[-1] == 1:
-                    target = target.squeeze(-1)
-                if pred.dim() > 1 and pred.shape[-1] == 1:
-                    pred = pred.squeeze(-1)
-                
-                # Update metrics
-                m_out = self.train_metrics[name](pred, target.long())
-                # Log shorthand for the SOTA bar
-                for m_name, val in m_out.items():
-                    self.log(f"train/{m_name}", val, prog_bar=True, on_step=True, batch_size=bsz)
+            # (train_metrics updates removed due to O(N^2) complexity; AUC handled strictly in validation)
 
         for key, val in w_metrics.items():
             self.log(f"train/{key}", val, on_step=False, on_epoch=True, sync_dist=True, batch_size=batch.get("input").shape[0])
@@ -421,6 +388,14 @@ class SPECTRAModule(pl.LightningModule):
         # For PCGrad, return None (manual optimization).
         # For others, return total_loss for PL automatic backward.
         return None if self.is_pcgrad else total_loss
+
+    def on_train_batch_end(self, outputs: Any, batch: Any, batch_idx: int) -> None:
+        # Periodic health check: Log backbone weight norm to detect dying weights
+        if batch_idx % 100 == 0:
+            shared_params = list(self.backbone.parameters())
+            wn = torch.norm(torch.stack([p.detach().norm(2) for p in shared_params]), 2)
+            # Log as WN for the SOTA researcher
+            self.log("health/backbone_weight_norm", wn, on_step=True, on_epoch=False, batch_size=batch.get("input").shape[0])
 
     # =================================================================
     # VALIDATION STEP

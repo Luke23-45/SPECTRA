@@ -27,6 +27,65 @@ from typing import Dict, List, Optional
 
 import torch
 import torch.nn.functional as F
+import torch.distributed as dist
+
+
+# ===========================================================================
+# DISTRIBUTED SYNC HELPERS (DDP)
+# ===========================================================================
+
+def sync_tensor_across_gpus(t: torch.Tensor) -> torch.Tensor:
+    """All-reduces a tensor across GPUs (sum) if DDP is initialized."""
+    if not (dist.is_available() and dist.is_initialized()):
+        return t
+    
+    original_device = t.device
+    if dist.get_backend() == "nccl" and not t.is_cuda:
+        # Move to the current rank's CUDA device for NCCL
+        t = t.cuda()
+        
+    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+    return t.to(original_device)
+
+
+def gather_tensor_across_gpus(t: torch.Tensor) -> torch.Tensor:
+    """Exact all_gather for variable-length 1D tensors with padding."""
+    if not (dist.is_available() and dist.is_initialized()):
+        return t
+        
+    original_device = t.device
+    if dist.get_backend() == "nccl" and not t.is_cuda:
+        t = t.cuda()
+        
+    world_size = dist.get_world_size()
+    
+    # 1. Gather lengths
+    local_len = torch.tensor([len(t)], dtype=torch.long, device=t.device)
+    lengths = [torch.zeros(1, dtype=torch.long, device=t.device) for _ in range(world_size)]
+    dist.all_gather(lengths, local_len)
+    
+    max_len = max([l.item() for l in lengths])
+    
+    # 2. Pad local tensor
+    if len(t) < max_len:
+        pad_size = max_len - len(t)
+        t_padded = torch.cat([t, torch.zeros(pad_size, dtype=t.dtype, device=t.device)])
+    else:
+        t_padded = t
+        
+    # 3. All gather padded
+    gathered_padded = [torch.zeros(max_len, dtype=t.dtype, device=t.device) for _ in range(world_size)]
+    dist.all_gather(gathered_padded, t_padded)
+    
+    # 4. Unpad and concat
+    result = []
+    for i in range(world_size):
+        valid_len = lengths[i].item()
+        result.append(gathered_padded[i][:valid_len])
+        
+    final_tensor = torch.cat(result)
+    return final_tensor.to(original_device)
+
 
 
 # ===========================================================================
@@ -95,7 +154,10 @@ class SegmentationMetrics:
         Returns:
             dict with keys: miou, pixel_acc, mean_class_acc, per_class_iou (List)
         """
-        conf = self._conf_matrix.float()
+        # [SOTA FIX]: DDP Metric Sync. All-reduce the confusion matrix globally.
+        # This guarantees mathematical correctness rather than biased GPU-averages.
+        conf_matrix_synced = sync_tensor_across_gpus(self._conf_matrix.float())
+        conf = conf_matrix_synced
 
         # True positives: diagonal
         tp = conf.diag()
@@ -207,42 +269,42 @@ class DepthMetrics:
     def compute(self) -> Dict[str, float]:
         """Compute all depth metrics over accumulated valid pixels."""
         if not self._preds:
-            return {k: float("nan") for k in
-                    ["abs_rel", "sq_rel", "rmse", "log_rmse",
-                     "delta_1", "delta_2", "delta_3"]}
+            # We MUST sync even if local list is empty to prevent DDP deadlock!
+            stats = torch.zeros(8, dtype=torch.float32)
+        else:
+            pred   = torch.cat(self._preds)    # [N_valid]
+            target = torch.cat(self._targets)  # [N_valid]
+            
+            pred_clamped = pred.clamp(min=1e-3)
+            target_clamped = target.clamp(min=1e-3)
 
-        pred   = torch.cat(self._preds)    # [N_valid]
-        target = torch.cat(self._targets)  # [N_valid]
-
-        # Absolute relative error
-        abs_rel = (torch.abs(pred - target) / target).mean().item()
-
-        # Squared relative error
-        sq_rel = ((pred - target) ** 2 / target).mean().item()
-
-        # RMSE
-        rmse = torch.sqrt(((pred - target) ** 2).mean()).item()
-
-        # Log-scale RMSE
-        log_rmse = torch.sqrt(
-            ((torch.log(pred.clamp(min=1e-3)) - torch.log(target.clamp(min=1e-3))) ** 2).mean()
-        ).item()
-
-        # Threshold accuracy: max(pred/gt, gt/pred) < threshold
-        ratio = torch.max(pred / target, target / pred)  # [N]
-        delta_1 = (ratio < 1.25    ).float().mean().item()
-        delta_2 = (ratio < 1.25 ** 2).float().mean().item()
-        delta_3 = (ratio < 1.25 ** 3).float().mean().item()
+            stats = torch.stack([
+                (torch.abs(pred - target) / target).sum(),
+                ((pred - target) ** 2 / target).sum(),
+                ((pred - target) ** 2).sum(),
+                ((torch.log(pred_clamped) - torch.log(target_clamped)) ** 2).sum(),
+                (torch.max(pred / target, target / pred) < 1.25).float().sum(),
+                (torch.max(pred / target, target / pred) < 1.25 ** 2).float().sum(),
+                (torch.max(pred / target, target / pred) < 1.25 ** 3).float().sum(),
+                torch.tensor(float(len(pred)), dtype=torch.float32)
+            ]).cpu()
+            
+        # [SOTA FIX]: Global accumulation for exact distributed metrics
+        stats_synced = sync_tensor_across_gpus(stats)
+        
+        n_v = stats_synced[7].item()
+        if n_v < 1.0:
+             return {k: float("nan") for k in ["abs_rel", "sq_rel", "rmse", "log_rmse", "delta_1", "delta_2", "delta_3"]}
 
         return {
-            "abs_rel":  abs_rel,
-            "sq_rel":   sq_rel,
-            "rmse":     rmse,
-            "log_rmse": log_rmse,
-            "delta_1":  delta_1,
-            "delta_2":  delta_2,
-            "delta_3":  delta_3,
-            "n_valid":  len(pred),
+            "abs_rel":  stats_synced[0].item() / n_v,
+            "sq_rel":   stats_synced[1].item() / n_v,
+            "rmse":     math.sqrt(stats_synced[2].item() / n_v),
+            "log_rmse": math.sqrt(stats_synced[3].item() / n_v),
+            "delta_1":  stats_synced[4].item() / n_v,
+            "delta_2":  stats_synced[5].item() / n_v,
+            "delta_3":  stats_synced[6].item() / n_v,
+            "n_valid":  int(n_v),
         }
 
 
@@ -308,19 +370,25 @@ class NormalMetrics:
     def compute(self) -> Dict[str, float]:
         """Compute all normal metrics over accumulated valid pixels."""
         if not self._angles:
+            angles = torch.tensor([], dtype=torch.float32)
+        else:
+            angles = torch.cat(self._angles)  # [N_valid]
+            
+        # [SOTA FIX]: Gather all angles exactly for accurate multi-GPU Median computation.
+        angles_synced = gather_tensor_across_gpus(angles)
+        
+        if len(angles_synced) == 0:
             return {k: float("nan") for k in
                     ["mean_angle_deg", "median_angle_deg",
                      "within_11_25", "within_22_5", "within_30"]}
 
-        angles = torch.cat(self._angles)  # [N_valid]
-
         return {
-            "mean_angle_deg":   angles.mean().item(),
-            "median_angle_deg": angles.median().item(),
-            "within_11_25":     (angles < 11.25).float().mean().item(),
-            "within_22_5":      (angles < 22.5 ).float().mean().item(),
-            "within_30":        (angles < 30.0 ).float().mean().item(),
-            "n_valid":          len(angles),
+            "mean_angle_deg":   angles_synced.mean().item(),
+            "median_angle_deg": angles_synced.median().item(),
+            "within_11_25":     (angles_synced < 11.25).float().mean().item(),
+            "within_22_5":      (angles_synced < 22.5 ).float().mean().item(),
+            "within_30":        (angles_synced < 30.0 ).float().mean().item(),
+            "n_valid":          len(angles_synced),
         }
 
 

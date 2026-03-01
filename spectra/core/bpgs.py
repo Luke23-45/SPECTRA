@@ -254,17 +254,17 @@ class BPGSScaler(nn.Module):
         # Cast back to input dtype to preserve AMP compatibility downstream
         total_loss = total_loss.to(losses.dtype)
 
-        # 6. Telemetry
+        # 6. Telemetry (Async: .item() removed to prevent CPU-GPU stall on every step)
         metrics = {}
         for i in range(self.num_tasks):
-            metrics[f"bpgs/log_var_{i}"] = log_vars[i].item()
-            metrics[f"bpgs/weight_{i}"] = (0.5 * precision[i]).item()
-            metrics[f"bpgs/precision_{i}"] = precision[i].item()
-            metrics[f"bpgs/loss_ema_{i}"] = self.loss_ema[i].item()
+            metrics[f"bpgs/log_var_{i}"] = log_vars[i]
+            metrics[f"bpgs/weight_{i}"] = (0.5 * precision[i])
+            metrics[f"bpgs/precision_{i}"] = precision[i]
+            metrics[f"bpgs/loss_ema_{i}"] = self.loss_ema[i]
 
         # Aggregate diagnostics
-        metrics["bpgs/log_var_range"] = (log_vars.max() - log_vars.min()).item()
-        metrics["bpgs/theta_max_abs"] = self.theta.data.abs().max().item()
+        metrics["bpgs/log_var_range"] = (log_vars.max() - log_vars.min())
+        metrics["bpgs/theta_max_abs"] = self.theta.data.abs().max()
 
         return total_loss, metrics
 

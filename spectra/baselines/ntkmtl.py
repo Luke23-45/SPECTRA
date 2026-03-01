@@ -97,8 +97,8 @@ class NTKMTLWeighter(BaseWeighter):
 
         metrics = {}
         for i in range(self.num_tasks):
-            metrics[f"ntkmtl/weight_{i}"] = self.weights[i].item()
-            metrics[f"ntkmtl/spectral_{i}"] = self.spectral_energy[i].item()
+            metrics[f"ntkmtl/weight_{i}"] = self.weights[i]
+            metrics[f"ntkmtl/spectral_{i}"] = self.spectral_energy[i]
 
         return total, metrics
 
@@ -123,20 +123,21 @@ class NTKMTLWeighter(BaseWeighter):
         """
         norms = []
         for i in range(self.num_tasks):
-            # Compute gradient norm for each task
+            # Compute gradient norm for each task (fully asynchronous)
             grads = torch.autograd.grad(
                 losses[i], shared_params,
                 retain_graph=True,
                 allow_unused=True,
             )
+            # Use torch.tensor(0.0) fallback to guarantee tensor outputs for sum
             total_norm = sum(
-                g.detach().norm() ** 2 if g is not None else 0.0
+                (g.detach().norm() ** 2) if g is not None else torch.tensor(0.0, device=losses.device)
                 for g in grads
             )
-            norms.append(total_norm.item() if isinstance(total_norm, torch.Tensor) else total_norm)
+            norms.append(total_norm)
 
-        # Convert to tensor
-        norms_t = torch.tensor(norms, device=losses.device, dtype=losses.dtype)
+        # Convert to tensor asynchronously
+        norms_t = torch.stack(norms).to(losses.dtype)
 
         # CRITICAL FIX: DDP Sync for Gradient Norms
         # Without this, each rank computes spectral_energy based on its local minibatch,
@@ -147,10 +148,18 @@ class NTKMTLWeighter(BaseWeighter):
 
         # EMA smoothing of spectral energy (no grad for buffer updates)
         with torch.no_grad():
-            self.spectral_energy.lerp_(norms_t, 1.0 - self._ema_decay)
+            # [SOTA FIX]: "Dead Task Monopoly". If a task is completely masked out,
+            # its gradient norm is 0.0. We MUST NOT decay its spectral energy.
+            # Otherwise, its inverse weight explodes and zeroes out all other tasks.
+            valid_mask = (norms_t > 1e-8).float()
+            
+            # Apply EMA only where gradients exist
+            updated_energy = torch.lerp(self.spectral_energy, norms_t, 1.0 - self._ema_decay)
+            self.spectral_energy.copy_(torch.where(valid_mask > 0.5, updated_energy, self.spectral_energy))
 
             # Inverse spectral weighting: tasks with higher energy get lower weight
-            safe_energy = self.spectral_energy.clamp(min=1e-8)
+            # Clamp floor raised to 1e-4 for extreme dataset scale gaps
+            safe_energy = self.spectral_energy.clamp(min=1e-4)
             inv_weights = 1.0 / safe_energy
             # Normalize to sum to num_tasks (preserves scale)
             self.weights.copy_(inv_weights * self.num_tasks / inv_weights.sum())

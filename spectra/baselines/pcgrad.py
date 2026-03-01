@@ -65,6 +65,8 @@ class PCGradWeighter(BaseWeighter):
         self,
         task_losses: List[torch.Tensor],
         shared_params: List[nn.Parameter],
+        skip_backward: bool = False,
+        scale: float = 1.0,
     ) -> Dict[str, float]:
         """
         Custom backward with gradient projection (replaces total_loss.backward()).
@@ -72,20 +74,23 @@ class PCGradWeighter(BaseWeighter):
         Args:
             task_losses: List of per-task scalar losses (each requires_grad=True).
             shared_params: List of shared backbone parameters to modify gradients for.
+            skip_backward: If True, assumes total_loss.backward(retain_graph=True) 
+                          was already called externally (e.g. by PTL manual_backward).
+            scale: Multiplier for final gradients (used to match AMP scaling).
 
         Returns:
             metrics: Conflict statistics for logging.
         """
-        # 0. CRITICAL FIX: Backward pass for non-shared parameters (task heads)
-        # We must retain the graph because we'll call autograd.grad on it again.
-        total_loss = sum(task_losses)
-        total_loss.backward(retain_graph=True)
+        # 0. Optional: Component-wise backward (usually for heads)
+        if not skip_backward:
+            total_loss = sum(task_losses)
+            total_loss.backward(retain_graph=True)
 
         # 1. Compute per-task gradients specifically for the shared backbone
+        # We must use torch.autograd.grad even if backward was called,
+        # to get the isolated per-task components for projection.
         task_grads = []
         for loss in task_losses:
-            # We must use torch.autograd.grad to get the isolated per-task gradients
-            # without accumulating them into the .grad buffers yet.
             grads = torch.autograd.grad(
                 loss, shared_params,
                 retain_graph=True,
@@ -113,41 +118,51 @@ class PCGradWeighter(BaseWeighter):
                 gj = task_grads[j]
                 dot = gi.dot(gj)
 
-                if dot < 0:
-                    # Conflict! Project gi onto normal plane of gj
-                    gi = gi - (dot / (gj.norm() ** 2 + 1e-8)) * gj
-                    conflict_counts[i] += 1
+                # [SOTA Async Patch] Replace blocking `if dot < 0:` with tensor ops
+                is_conflict = (dot < 0)
+                
+                # Compute projection vector
+                proj = (dot / (gj.norm() ** 2 + 1e-8)) * gj
+                
+                # Apply only if conflict (avoids CPU-GPU sync pipeline stall)
+                gi = torch.where(is_conflict, gi - proj, gi)
+                conflict_counts[i] += is_conflict.float()
 
             projected.append(gi)
 
         # 3. Average projected gradients
         final_grad = torch.stack(projected).mean(dim=0)
 
-        # 3.5. DDP Synchronization — CRITICAL FIX!
-        # `autograd.grad` circumvents DDP hooks. Without this manual all_reduce,
-        # ranks will diverge instantly because they update with local projected gradients!
+        # 3.5. DDP Synchronization
         if torch.distributed.is_initialized():
             torch.distributed.all_reduce(final_grad, op=torch.distributed.ReduceOp.SUM)
             final_grad /= torch.distributed.get_world_size()
 
-        # 4. Assign gradients to parameters
+        # 4. Assign gradients to parameters (with optional scaling)
         offset = 0
         for param in shared_params:
             numel = param.numel()
+            g_slice = final_grad[offset:offset + numel].reshape(param.shape)
+            
+            # [Axe Scaling Patch] Apply scale factor to match AMP expectations
+            if scale != 1.0:
+                g_slice = g_slice * scale
+
             if param.grad is None:
-                param.grad = final_grad[offset:offset + numel].reshape(param.shape).clone()
+                param.grad = g_slice.clone()
             else:
-                param.grad.copy_(final_grad[offset:offset + numel].reshape(param.shape))
+                param.grad.copy_(g_slice)
             offset += numel
 
-        # Update running conflict counts
+        # Update running conflict counts (async)
         with torch.no_grad():
             self.conflict_count.lerp_(conflict_counts, 0.1)
 
+        # [SOTA Async Patch] Removed .item() to prevent CPU-GPU blocking at epoch tail
         metrics = {
-            f"pcgrad/conflict_{i}": conflict_counts[i].item()
+            f"pcgrad/conflict_{i}": conflict_counts[i]
             for i in range(self.num_tasks)
         }
-        metrics["pcgrad/total_conflicts"] = conflict_counts.sum().item()
+        metrics["pcgrad/total_conflicts"] = conflict_counts.sum()
 
         return metrics
