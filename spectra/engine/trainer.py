@@ -29,6 +29,13 @@ from spectra.heads.task_heads import RegressionHead, ClassificationHead
 from spectra.engine.schedulers import get_cosine_schedule_with_warmup
 from spectra.evaluation.metrics import SegmentationMetrics, DepthMetrics, NormalMetrics
 
+try:
+    from torchmetrics import MetricCollection
+    from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision, BinaryRecall, MulticlassAUROC, MulticlassAccuracy
+    HAS_TORCHMETRICS = True
+except ImportError:
+    HAS_TORCHMETRICS = False
+
 logger = logging.getLogger("spectra.trainer")
 
 
@@ -177,6 +184,34 @@ class SPECTRAModule(pl.LightningModule):
         # Metrics are initialized here so they are always available,
         # even before the first validation epoch.
         self._init_metrics()
+        
+        # ─── 6. Live Training Metrics (SOTA Bar) ───────────────
+        self._init_train_metrics()
+
+    def _init_train_metrics(self) -> None:
+        """Initialize real-time metrics for the training progress bar."""
+        self.train_metrics = nn.ModuleDict()
+        if not HAS_TORCHMETRICS:
+            return
+
+        for task_cfg in self.cfg.tasks:
+            name = task_cfg.name
+            t = task_cfg.get("type", "regression")
+            
+            # Sepsis Clinical (Binary Classification)
+            if name == "outcome" and t == "classification":
+                self.train_metrics[name] = MetricCollection({
+                    "AUC": BinaryAUROC(),
+                    "PRC": BinaryAveragePrecision(),
+                    "R": BinaryRecall()
+                })
+            # Multi-class tasks (e.g. Clinical Phase)
+            elif t == "classification" and task_cfg.get("num_classes", 1) > 1:
+                nc = task_cfg["num_classes"]
+                self.train_metrics[name] = MetricCollection({
+                    "ACC": MulticlassAccuracy(num_classes=nc),
+                    "AUC": MulticlassAUROC(num_classes=nc)
+                })
 
     def _init_metrics(self) -> None:
         """
@@ -331,6 +366,16 @@ class SPECTRAModule(pl.LightningModule):
 
             total_loss = losses_tensor.sum().detach()
             w_metrics = pcgrad_metrics
+            
+            # --- 5. Live Grad Norm (GN) & Conflicts (C) for SOTA Bar ---
+            # Extract total conflict count
+            conflicts = pcgrad_metrics.get("pcgrad/total_conflicts", 0)
+            self.log("pcgrad/total_conflicts", conflicts, prog_bar=True, on_step=True, batch_size=batch.get("input").shape[0])
+            
+            # Calculate backbone grad norm
+            shared_params = list(self.backbone.parameters())
+            gn = torch.norm(torch.stack([p.grad.detach().norm(2) for p in shared_params if p.grad is not None]), 2)
+            self.log("health/backbone_grad_norm", gn, prog_bar=True, on_step=True, batch_size=batch.get("input").shape[0])
         else:
             # ─── Standard optimization path ───────────────────
             shared_params = list(self.backbone.parameters())
@@ -347,12 +392,31 @@ class SPECTRAModule(pl.LightningModule):
                 return None
             return torch.tensor(0.0, device=self.device, requires_grad=True)
 
-        # Logging
-        self.log("train/total_loss", total_loss, prog_bar=True, sync_dist=True)
+        # Logging (Live updates for the standard TQDM bar)
+        bsz = batch.get("input").shape[0]
+        self.log("train/total_loss", total_loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True, batch_size=bsz)
         for name, loss in loss_dict.items():
-            self.log(f"train/{name}_loss", loss, sync_dist=True)
+            self.log(f"train/{name}_loss", loss, on_step=False, on_epoch=True, sync_dist=True, batch_size=bsz)
+            
+            # Update and log live research metrics
+            if name in self.train_metrics:
+                target = batch["targets"][name]
+                pred = predictions[name]
+                
+                # SOTA Shape Squeezer (Standardizes [N, 1] to [N] for binary metrics)
+                if target.dim() > 1 and target.shape[-1] == 1:
+                    target = target.squeeze(-1)
+                if pred.dim() > 1 and pred.shape[-1] == 1:
+                    pred = pred.squeeze(-1)
+                
+                # Update metrics
+                m_out = self.train_metrics[name](pred, target.long())
+                # Log shorthand for the SOTA bar
+                for m_name, val in m_out.items():
+                    self.log(f"train/{m_name}", val, prog_bar=True, on_step=True, batch_size=bsz)
+
         for key, val in w_metrics.items():
-            self.log(f"train/{key}", val, sync_dist=True)
+            self.log(f"train/{key}", val, on_step=False, on_epoch=True, sync_dist=True, batch_size=batch.get("input").shape[0])
 
         # For PCGrad, return None (manual optimization).
         # For others, return total_loss for PL automatic backward.
@@ -383,7 +447,7 @@ class SPECTRAModule(pl.LightningModule):
                 loss = loss_fn(pred, target, batch["meta"])
             else:
                 loss = loss_fn(pred, target)
-            self.log(f"val/{name}_loss", loss, sync_dist=True, prog_bar=False)
+            self.log(f"val/{name}_loss", loss, sync_dist=True, prog_bar=False, batch_size=batch.get("input").shape[0])
             total_val_loss = total_val_loss + loss
 
             # ── Accumulate task metrics (no compute yet — done at epoch end) ──
@@ -398,7 +462,7 @@ class SPECTRAModule(pl.LightningModule):
                 elif isinstance(metric_obj, NormalMetrics):
                     metric_obj.update(pred, target)
 
-        self.log("val/total_loss", total_val_loss, sync_dist=True, prog_bar=True)
+        self.log("val/total_loss", total_val_loss, sync_dist=True, prog_bar=True, batch_size=batch.get("input").shape[0])
 
     # =================================================================
     # VALIDATION EPOCH HOOKS
@@ -456,8 +520,8 @@ class SPECTRAModule(pl.LightningModule):
                 if name == "normals":
                     self.log("val/normals_mean_angle", r["mean_angle_deg"], prog_bar=True, sync_dist=False)
                 logger.info(
-                    f"[Val] {name}: mean_angle={r['mean_angle_deg']:.2f}°, "
-                    f"<11.25°={r['within_11_25']:.4f}"
+                    f"[Val] {name}: mean_angle={r['mean_angle_deg']:.2f} degrees, "
+                    f"<11.25 degrees={r['within_11_25']:.4f}"
                 )
 
         # ── B-PGS Telemetry at Epoch End ────────────────────────────

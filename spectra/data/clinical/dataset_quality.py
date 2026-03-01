@@ -530,7 +530,7 @@ class QualityIngestionEngine:
 # ==============================================================================
 
 def build_quality_dataset(
-    output_dir: str = "data/iridium_v1",
+    output_dir: str = "datasets/iridium_v1",
     val_ratio: float = VAL_RATIO,
 ):
     """Main entry point for building the enriched dataset.
@@ -584,5 +584,5 @@ def build_quality_dataset(
 
 if __name__ == "__main__":
     import sys
-    target_dir = sys.argv[1] if len(sys.argv) > 1 else "data/iridium_v1"
+    target_dir = sys.argv[1] if len(sys.argv) > 1 else "datasets/iridium_v1"
     build_quality_dataset(output_dir=target_dir)

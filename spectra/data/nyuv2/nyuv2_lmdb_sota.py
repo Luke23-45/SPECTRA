@@ -51,7 +51,7 @@ os.environ["HF_HUB_CACHE"] = str(STAGING_DIR.absolute())
 # CONFIGURATION
 # ==============================================================================
 DATASET_REPO = "tanganke/nyuv2"
-OUTPUT_DIR = Path("data/nyuv2_lmdb")
+OUTPUT_DIR = Path("datasets/nyuv2_lmdb")
 # STAGING_DIR is now globally managed above
 LMDB_MAP_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
 COMMIT_FREQ = 100

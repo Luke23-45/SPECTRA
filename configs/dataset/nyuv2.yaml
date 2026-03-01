@@ -2,7 +2,7 @@
 # Dataset configuration for NYUv2 multi-task dense prediction benchmark.
 
 name: nyuv2
-root: "data/nyuv2_lmdb"      # Root directory for high-fidelity LMDBs
+root: "datasets/nyuv2_lmdb"      # Root directory for high-fidelity LMDBs
 augmentation: true            # RandomScaleCrop + RandomHorizontalFlip (train only)
 normalize_rgb: false          # ImageNet normalization (enable for pretrained backbones)
 

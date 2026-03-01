@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 logger = logging.getLogger("Forensic-Auditor")
 
 def forensic_audit(split="train", sample_idx=0):
-    root = Path("data/nyuv2_lmdb")
+    root = Path("datasets/nyuv2_lmdb")
     split_dir = root / split
     lmdb_path = split_dir / "data.lmdb"
     index_path = root / f"{split}_index.json"

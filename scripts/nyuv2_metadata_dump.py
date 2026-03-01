@@ -16,7 +16,7 @@ from tqdm import tqdm
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("Metadata-Auditor")
 
-def dump_metadata(repo="tanganke/nyuv2", output_file="data/nyuv2_metadata_audit.csv"):
+def dump_metadata(repo="tanganke/nyuv2", output_file="datasets/nyuv2_metadata_audit.csv"):
     logger.info(f"Connecting to {repo} (Streaming Mode)...")
     ds = load_dataset(repo, streaming=True)
     

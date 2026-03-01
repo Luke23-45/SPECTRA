@@ -116,7 +116,7 @@ class NYUv2Dataset(Dataset):
 
     def __init__(
         self,
-        root: str = "data/nyuv2_lmdb",
+        root: str = "datasets/nyuv2_lmdb",
         split: str = "train",
         augmentation: bool = True,
         normalize_rgb: bool = False,
@@ -295,7 +295,7 @@ if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
 
-    root = sys.argv[1] if len(sys.argv) > 1 else "data/nyuv2"
+    root = sys.argv[1] if len(sys.argv) > 1 else "datasets/nyuv2"
 
     print("=" * 70)
     print("SPECTRA NYUv2 Dataset — Smoke Test")

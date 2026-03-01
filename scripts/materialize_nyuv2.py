@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 # CONFIG
 DATASET_REPO = "tanganke/nyuv2"
-OUTPUT_ROOT = Path("data/nyuv2")
+OUTPUT_ROOT = Path("datasets/nyuv2")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
 logger = logging.getLogger("SPECTRA-Data")

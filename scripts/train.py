@@ -30,7 +30,8 @@ import logging
 import pytorch_lightning as pl
 from pathlib import Path
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from tqdm import tqdm
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, TQDMProgressBar
 from pytorch_lightning.loggers import WandbLogger
 
 from spectra.data.datamodule import SPECTRADataModule
@@ -202,6 +203,60 @@ def build_checkpoints(cfg: DictConfig, output_dir: Path):
 # MAIN ENTRY POINT
 # =============================================================================
 
+class SOTAProgressBar(TQDMProgressBar):
+    """
+    Research-Grade Progress Bar (SOTA Style).
+    Maps long metric keys to concise research shorthand (GN, L, AUC, etc.).
+    """
+    def init_train_tqdm(self) -> tqdm:
+        bar = super().init_train_tqdm()
+        # "Gold Standard" Format: Dense, no bars, high-fidelity telemetry
+        bar.bar_format = "{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+        return bar
+
+    def init_validation_tqdm(self) -> tqdm:
+        bar = super().init_validation_tqdm()
+        bar.bar_format = "{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+        return bar
+
+    def get_metrics(self, trainer, pl_module):
+        items = super().get_metrics(trainer, pl_module)
+        items.pop("v_num", None) # Remove v_num to save space
+        
+        # SOTA Shorthand Mapping
+        mapping = {
+            "train/total_loss": "L",
+            "health/backbone_grad_norm": "GN",
+            "pcgrad/total_conflicts": "C",
+            "spectral/hf_divorce_index": "D",
+            "val/total_loss": "vL",
+            "train/AUC": "AUC",
+            "train/PRC": "PRC",
+            "train/R": "R",
+        }
+        
+        # Add task-specific adaptive mapping
+        # NYUV2: mIoU, abs_rel, angle
+        # Clinical: auc, prc, recall
+        for task in getattr(pl_module, "task_names", []):
+            mapping[f"train/{task}_loss"] = f"L_{task[:1]}"
+            mapping[f"val/{task}_miou"] = "mIoU"
+            mapping[f"val/{task}_abs_rel"] = "abs_rel"
+            mapping[f"val/{task}_mean_angle"] = "angle"
+            
+        new_items = {}
+        for k, v in items.items():
+            # Handle PTL suffixes like _step or _epoch
+            base_k = k.replace("_step", "").replace("_epoch", "")
+            
+            if base_k in mapping:
+                new_items[mapping[base_k]] = v
+            else:
+                # Fallback: remove 'train/' or 'val/' prefix
+                clean_k = k.replace("train/", "").replace("val/", "")
+                new_items[clean_k] = v
+        return new_items
+
 @hydra.main(config_path="../configs", config_name="config", version_base=None)
 def main(cfg: DictConfig):
     # 1. Environment & Seeding
@@ -234,10 +289,11 @@ def main(cfg: DictConfig):
 
     # 6. Callback Infrastructure
     callbacks = [
-        *build_checkpoints(cfg, output_dir),                      # D9: metric-aware ckpt
+        *build_checkpoints(cfg, output_dir),
         SpectralMonitoringCallback(log_every_n_epochs=5),
-        GradientHealthCallback(check_interval=200),               # D4/D8: real grad monitoring
+        GradientHealthCallback(check_interval=200),
         LearningRateMonitor(logging_interval="step"),
+        SOTAProgressBar(refresh_rate=1),
     ]
 
     # 7. Logger Integration
