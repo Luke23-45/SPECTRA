@@ -211,12 +211,12 @@ class SOTAProgressBar(TQDMProgressBar):
     def init_train_tqdm(self) -> tqdm:
         bar = super().init_train_tqdm()
         # "Gold Standard" Format: Dense, no bars, high-fidelity telemetry
-        bar.bar_format = "{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+        bar.bar_format = "{desc} {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
         return bar
 
     def init_validation_tqdm(self) -> tqdm:
         bar = super().init_validation_tqdm()
-        bar.bar_format = "{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+        bar.bar_format = "{desc} {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
         return bar
 
     def get_metrics(self, trainer, pl_module):
@@ -299,12 +299,17 @@ def main(cfg: DictConfig):
     # 7. Logger Integration
     wandb_logger = None
     if cfg.get("logging", {}).get("use_wandb", False):
+        # Deterministic Offline Mode (Silent Research)
+        if cfg.logging.get("wandb_mode") == "offline":
+            os.environ["WANDB_MODE"] = "offline"
+            logger.info("[Logging] WandB Offline Mode Engaged (Silent Research)")
+
         wandb_logger = WandbLogger(
             project=cfg.logging.get("wandb_project", "spectra-mtl"),
             name=cfg.get("run_name", "unnamed_run"),
             save_dir=str(output_dir),
-            offline=cfg.logging.get("wandb_offline", False),
-            log_model=False,  # We handle checkpoints ourselves
+            offline=(cfg.logging.get("wandb_mode") == "offline"),
+            log_model=False,
         )
         # Log the full config as a W&B artifact for exact reproducibility
         if wandb_logger.experiment is not None:

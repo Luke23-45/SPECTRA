@@ -85,15 +85,19 @@ class SPECTRADataModule(pl.LightningDataModule):
 
         elif self.dataset_name == "clinical":
             dataset_dir = self.cfg.dataset.get("dataset_dir", "data/ready")
+            subset_pct = self.cfg.dataset.get("subset_pct", 1.0)
+            
             self.train_ds = ICUSotaDataset(
                 dataset_dir=dataset_dir,
                 split="train",
                 augment_noise=self.cfg.train.get("augment_noise", 0.0),
-                augment_mask_prob=self.cfg.train.get("augment_mask_prob", 0.0)
+                augment_mask_prob=self.cfg.train.get("augment_mask_prob", 0.0),
+                subset_pct=subset_pct
             )
             self.val_ds = ICUTrajectoryDataset(
                 dataset_dir=dataset_dir,
-                split="val"
+                split="val",
+                subset_pct=subset_pct
             )
 
         else:

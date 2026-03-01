@@ -5,6 +5,7 @@ name: clinical
 dataset_dir: "datasets/sepsis_clinical_28"
 hf_repo: "hellxhell/sepsis-clinical-28"
 sepsis_boost: 10.0
+subset_pct: 1.0  # CPM: Subsetting for fast piloting (1.0 = Full Benchmark)
 
 # ─── Model Overrides (Expert Clinical Spec) ───────────────────
 model:

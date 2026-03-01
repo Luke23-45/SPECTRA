@@ -177,7 +177,8 @@ class ICUTrajectoryDataset(Dataset):
         history_len: int = 24,
         pred_len: int = 6,
         max_cache_size: int = 128,
-        validate_schema: bool = True
+        validate_schema: bool = True,
+        subset_pct: float = 1.0
     ):
         super().__init__()
         
@@ -209,6 +210,13 @@ class ICUTrajectoryDataset(Dataset):
                 self.episode_metadata = full_index["episodes"]
                 self.metadata = full_index["metadata"]
                 self.global_stats = self.metadata.get("stats", None)
+                
+                # --- Episode-Level Subsetting (Piloting Mode) ---
+                if subset_pct < 1.0:
+                    n_total = len(self.episode_metadata)
+                    n_subset = max(1, int(n_total * subset_pct))
+                    logger.info(f"[{split.upper()}] Piloting Mode: Subsetting to {subset_pct*100:.1f}% ({n_subset}/{n_total} episodes)")
+                    self.episode_metadata = self.episode_metadata[:n_subset]
         except Exception as e:
             raise RuntimeError(f"Corrupted Index JSON: {e}")
 
@@ -474,14 +482,16 @@ class ICUSotaDataset(ICUTrajectoryDataset):
         pred_len: int = 6,
         augment_noise: float = 0.005,
         augment_mask_prob: float = 0.0,
-        validate_schema: bool = True
+        validate_schema: bool = True,
+        subset_pct: float = 1.0
     ):
         super().__init__(
             dataset_dir=dataset_dir, 
             split=split, 
             history_len=history_len, 
             pred_len=pred_len,
-            validate_schema=validate_schema
+            validate_schema=validate_schema,
+            subset_pct=subset_pct
         )
         
         self.augment_noise = augment_noise
@@ -573,6 +583,9 @@ class StatefulWeightedSampler(Sampler):
         self.consumed = 0
         self.rank = get_rank() # safe utility import assumed
         self.indices = None
+
+    def __len__(self):
+        return self.num_samples
 
     def set_epoch(self, epoch: int):
         """Called by Trainer at start of epoch."""
