@@ -84,6 +84,9 @@ def _build_loss(task_cfg: DictConfig):
     elif loss_name == "l1":
         return nn.L1Loss()
     elif loss_name == "bce":
+        pos_weight = task_cfg.get("pos_weight", None)
+        if pos_weight is not None:
+            return nn.BCEWithLogitsLoss(pos_weight=torch.tensor(float(pos_weight)))
         return nn.BCEWithLogitsLoss()
     elif loss_name == "cross_entropy":
         ignore_idx = task_cfg.get("ignore_index", -100)
@@ -148,6 +151,7 @@ class SPECTRAModule(pl.LightningModule):
         self.task_losses = nn.ModuleDict()
         self.task_types = {}
         self.task_manifolds = {}
+        self.task_weights = {}
 
         for task_cfg in cfg.tasks:
             name = task_cfg.name
@@ -160,6 +164,7 @@ class SPECTRAModule(pl.LightningModule):
             self.task_losses[name] = _build_loss(task_cfg)
             self.task_types[name] = task_cfg.get("type", "regression")
             self.task_manifolds[name] = task_cfg.get("manifold", "planner")
+            self.task_weights[name] = float(task_cfg.get("weight", 1.0))
 
         self.task_names = [t.name for t in cfg.tasks]
         self.num_tasks = len(self.task_names)
@@ -298,6 +303,7 @@ class SPECTRAModule(pl.LightningModule):
 
         # Compute per-task losses
         task_loss_list = []
+        weighted_task_loss_list = []
         loss_dict = {}
 
         for name in self.task_names:
@@ -318,9 +324,10 @@ class SPECTRAModule(pl.LightningModule):
             else:
                 loss = loss_fn(pred, target)
             task_loss_list.append(loss)
+            weighted_task_loss_list.append(loss * self.task_weights[name])
             loss_dict[name] = loss
 
-        losses_tensor = torch.stack(task_loss_list)
+        losses_tensor = torch.stack(weighted_task_loss_list)
 
         # ─── PCGrad SOTA: Manual Optimization & Surgery ────────────────
         if self.is_pcgrad:
@@ -351,7 +358,7 @@ class SPECTRAModule(pl.LightningModule):
 
                 # 1. Per-task backbone gradients (SCALED magnitude)
                 task_grads = []
-                for i, task_loss in enumerate(task_loss_list):
+                for i, task_loss in enumerate(weighted_task_loss_list):
                     grads = torch.autograd.grad(
                         scaler.scale(task_loss), shared_params,
                         retain_graph=True,
@@ -370,7 +377,7 @@ class SPECTRAModule(pl.LightningModule):
 
                 # 3. Head gradients: each head sees ONLY its own task loss
                 #    (fixes cross-contamination where heads saw all losses)
-                for task_name, task_loss in zip(self.task_names, task_loss_list):
+                for task_name, task_loss in zip(self.task_names, weighted_task_loss_list):
                     head_params = list(self.heads[task_name].parameters())
                     if not head_params:
                         continue
@@ -407,7 +414,7 @@ class SPECTRAModule(pl.LightningModule):
 
                 # 1. Per-task backbone gradients
                 task_grads = []
-                for i, task_loss in enumerate(task_loss_list):
+                for i, task_loss in enumerate(weighted_task_loss_list):
                     grads = torch.autograd.grad(
                         task_loss, shared_params,
                         retain_graph=True,
@@ -425,7 +432,7 @@ class SPECTRAModule(pl.LightningModule):
                 )
 
                 # 3. Head gradients (per-task isolation)
-                for task_name, task_loss in zip(self.task_names, task_loss_list):
+                for task_name, task_loss in zip(self.task_names, weighted_task_loss_list):
                     head_params = list(self.heads[task_name].parameters())
                     if not head_params:
                         continue
@@ -524,7 +531,7 @@ class SPECTRAModule(pl.LightningModule):
             else:
                 loss = loss_fn(pred, target)
             self.log(f"val/{name}_loss", loss, sync_dist=True, prog_bar=False, batch_size=batch.get("input").shape[0])
-            total_val_loss = total_val_loss + loss
+            total_val_loss = total_val_loss + loss * self.task_weights[name]
 
             # ── Accumulate task metrics (no compute yet — done at epoch end) ──
             if name in self._val_metrics:
@@ -541,7 +548,13 @@ class SPECTRAModule(pl.LightningModule):
                     # [SOTA Fix] Accumulate classification metrics (AUC/PRC)
                     p = pred.squeeze(-1) if pred.dim() > 1 and pred.shape[-1] == 1 else pred
                     t = target.squeeze(-1) if target.dim() > 1 and target.shape[-1] == 1 else target
-                    metric_obj.update(p, t.long())
+
+                    # Binary metrics expect int targets; multiclass metrics also
+                    # require integer class indices. Keep this explicit for safety.
+                    if name == "outcome":
+                        metric_obj.update(p, t.int())
+                    else:
+                        metric_obj.update(p, t.long())
 
         self.log("val/total_loss", total_val_loss, sync_dist=True, prog_bar=True, batch_size=batch.get("input").shape[0])
 

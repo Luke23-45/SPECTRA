@@ -49,6 +49,11 @@ PHASE_STABLE = 0
 PHASE_PRESHOCK = 1
 PHASE_SHOCK = 2
 
+def _is_outcome_positive_window(labels_window: np.ndarray, history_len: int) -> bool:
+    """Outcome-positive iff sepsis appears in the prediction horizon."""
+    fut_labels = labels_window[history_len:]
+    return bool((fut_labels > 0.5).any())
+
 # ==============================================================================
 # CANONICAL COLUMN SPECIFICATION (The "Truth")
 # ==============================================================================
@@ -447,7 +452,7 @@ class ICUTrajectoryDataset(Dataset):
         # phase: Gating signal (Stable/Pre-Shock/Shock)
         # outcome: Binary target (Does Sepsis occur in next prediction window?)
         phase = self._get_phase_label(labels_win)
-        outcome = float((labels_win[self.history_len:] > 0.5).any())
+        outcome = float(_is_outcome_positive_window(labels_win, self.history_len))
 
         return {
             "input": torch.from_numpy(obs_data.copy()),  # [T, 28]
@@ -653,16 +658,17 @@ def create_sepsis_aware_sampler(
     dataset: ICUTrajectoryDataset,
     sepsis_boost_factor: float = 10.0,
     max_samples: int = 100000,
-    seed: int = 42
+    seed: int = 42,
+    target: str = "outcome",
 ) -> StatefulWeightedSampler:
     """
     [v13.0 PATCH] Create a WeightedRandomSampler that oversamples sepsis-positive windows.
     
-    Problem: With 7.2% episode sepsis rate and 1.76% timestep rate, random batches
-    often contain zero sepsis cases, causing noisy gradients for the sepsis classifier.
-    
-    Solution: Assign higher sampling weights to windows that have sepsis (phase > 0).
-    This ensures each batch is more likely to contain meaningful sepsis examples.
+    Problem: With rare positives, random batches often contain zero positive windows,
+    causing noisy gradients for the outcome head.
+
+    Solution: Assign higher sampling weights to windows positive for the selected
+    target policy (default: outcome in prediction horizon).
     
     Args:
         dataset: ICUTrajectoryDataset or ICUSotaDataset instance
@@ -686,7 +692,14 @@ def create_sepsis_aware_sampler(
     # Rationale: Prevents parallel workers or different subset runs from thumping I/O.
     rank = get_rank()
     subset_str = getattr(dataset, "subset_pct", 1.0)
-    index_name = f"{dataset.split}_sepsis_index_sub{subset_str}.npy"
+    if target not in {"outcome", "phase"}:
+        raise ValueError(
+            f"Unknown sampler target '{target}'. Valid: ['outcome', 'phase']"
+        )
+
+    # Cache key must include target policy. Otherwise an old 'phase' index can be
+    # silently reused for 'outcome' runs (or vice versa), causing objective mismatch.
+    index_name = f"{dataset.split}_sepsis_index_{target}_sub{subset_str}.npy"
     index_path = dataset.root_path / index_name
     
     # 1. Wait-to-Load Logic for non-zero ranks
@@ -706,14 +719,18 @@ def create_sepsis_aware_sampler(
                     index_path.unlink()
                 else:
                     time.sleep(10) # Give rank 0 time to unlink
-                return create_sepsis_aware_sampler(dataset, sepsis_boost_factor, max_samples, seed)
+                return create_sepsis_aware_sampler(
+                    dataset, sepsis_boost_factor, max_samples, seed, target
+                )
         except Exception as e:
             if rank == 0:
                 logger.warning(f"[Sampler] Corrupt index detected, rebuilding: {e}")
                 if index_path.exists(): index_path.unlink()
             else:
                 time.sleep(10) # Wait for reconstruction
-            return create_sepsis_aware_sampler(dataset, sepsis_boost_factor, max_samples, seed)
+            return create_sepsis_aware_sampler(
+                dataset, sepsis_boost_factor, max_samples, seed, target
+            )
     else:
         # 2. Build Block (Rank 0 or Lead Worker reaches here)
         logger.info(f"[Sampler] Rank {rank} building Global Sepsis Index (100% Coverage, N={n_samples:,})...")
@@ -743,12 +760,15 @@ def create_sepsis_aware_sampler(
             
             # For each window in this episode
             for local_idx in range(n_chunks):
-                # Derive phase label for this window
-                # labels[local_idx : local_idx + window_size]
+                # Derive positive window according to selected sampling target
                 window = labels[local_idx : local_idx + dataset.window_size]
-                phase = dataset._get_phase_label(window)
-                
-                if phase > 0:
+                if target == "phase":
+                    is_positive = dataset._get_phase_label(window) > 0
+                else:
+                    # Default and clinical-safe: match outcome label definition
+                    is_positive = _is_outcome_positive_window(window, dataset.history_len)
+
+                if is_positive:
                     is_sepsis[global_ptr + local_idx] = True
             
             global_ptr += n_chunks

@@ -31,7 +31,7 @@ import pytorch_lightning as pl
 from pathlib import Path
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, TQDMProgressBar
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor, TQDMProgressBar
 from pytorch_lightning.loggers import WandbLogger
 
 from spectra.data.datamodule import SPECTRADataModule
@@ -145,6 +145,29 @@ def preflight_check(cfg: DictConfig, output_dir: Path) -> None:
 # CHECKPOINT FACTORY
 # =============================================================================
 
+def _dataset_key(cfg: DictConfig) -> str:
+    """Canonical dataset identifier (backward-compatible)."""
+    dcfg = cfg.get("dataset", {})
+    return dcfg.get("name", dcfg.get("benchmark", "synthetic"))
+
+
+def _merge_dataset_defaults(base_cfg: DictConfig, override_cfg: DictConfig) -> DictConfig:
+    """
+    Merge dataset defaults with top-level overrides without struct-key crashes.
+
+    OmegaConf structured nodes can reject unknown keys during direct merge
+    (`ConfigKeyError`). We convert both to plain dict first, then recreate a
+    DictConfig so CLI/top-level keys (e.g. `model.n_heads`) are preserved.
+    """
+    base = OmegaConf.to_container(base_cfg, resolve=False) if base_cfg is not None else {}
+    override = OmegaConf.to_container(override_cfg, resolve=False) if override_cfg is not None else {}
+    if not isinstance(base, dict):
+        base = {}
+    if not isinstance(override, dict):
+        override = {}
+    return OmegaConf.create({**base, **override})
+
+
 def build_checkpoints(cfg: DictConfig, output_dir: Path):
     """
     Build ModelCheckpoint callbacks appropriate for the benchmark.
@@ -159,7 +182,7 @@ def build_checkpoints(cfg: DictConfig, output_dir: Path):
     (for reporting) and the last checkpoint (for resumption after crash).
     """
     ckpt_dir = output_dir / "checkpoints"
-    benchmark = cfg.get("dataset", {}).get("benchmark", "synthetic")
+    benchmark = _dataset_key(cfg)
 
     checkpoints = []
 
@@ -184,8 +207,29 @@ def build_checkpoints(cfg: DictConfig, output_dir: Path):
             save_last=True,
             auto_insert_metric_name=False,
         ))
+    elif benchmark == "clinical":
+        # Clinical: select best model by outcome AUC (primary objective),
+        # but still keep a loss-monitored 'last' checkpoint for robust resume.
+        checkpoints.append(ModelCheckpoint(
+            dirpath=ckpt_dir,
+            filename="best-outcome-ep{epoch:02d}-{val/outcome_AUC:.4f}",
+            monitor="val/outcome_AUC",
+            mode="max",
+            save_top_k=3,
+            save_last=False,
+            auto_insert_metric_name=False,
+        ))
+        checkpoints.append(ModelCheckpoint(
+            dirpath=ckpt_dir,
+            filename="best-loss-ep{epoch:02d}-{val/total_loss:.4f}",
+            monitor="val/total_loss",
+            mode="min",
+            save_top_k=1,
+            save_last=True,
+            auto_insert_metric_name=False,
+        ))
     else:
-        # Synthetic / Clinical: loss is the primary signal
+        # Synthetic: loss is the primary signal
         checkpoints.append(ModelCheckpoint(
             dirpath=ckpt_dir,
             filename="best-ep{epoch:02d}-{val/total_loss:.4f}",
@@ -197,6 +241,34 @@ def build_checkpoints(cfg: DictConfig, output_dir: Path):
         ))
 
     return checkpoints
+
+
+def build_early_stopping(cfg: DictConfig):
+    """Optional early stopping; defaults on for clinical to prevent wasted epochs."""
+    enabled = cfg.train.get("early_stop", None)
+    benchmark = _dataset_key(cfg)
+    if enabled is None:
+        enabled = (benchmark == "clinical")
+    if not enabled:
+        return None
+
+    if benchmark == "clinical":
+        monitor, mode = "val/outcome_AUC", "max"
+        min_delta = cfg.train.get("early_stop_min_delta", 1e-3)
+    elif benchmark == "nyuv2":
+        monitor, mode = "val/miou", "max"
+        min_delta = cfg.train.get("early_stop_min_delta", 1e-4)
+    else:
+        monitor, mode = "val/total_loss", "min"
+        min_delta = cfg.train.get("early_stop_min_delta", 1e-4)
+
+    return EarlyStopping(
+        monitor=monitor,
+        mode=mode,
+        patience=cfg.train.get("early_stop_patience", 3),
+        min_delta=min_delta,
+        check_on_train_epoch_end=False,
+    )
 
 
 # =============================================================================
@@ -269,14 +341,15 @@ def main(cfg: DictConfig):
     logger.info(f"[Mission-Control] Config:\n{OmegaConf.to_yaml(cfg)}")
 
     # --- NASA-Grade Config Merge ---
-    # Hydra namespaces dataset configs under cfg.dataset.*
-    # Bubble up overrides so engine code can access them via cfg.* directly.
+    # Hydra namespaces dataset configs under cfg.dataset.*.
+    # IMPORTANT: dataset.* provides defaults, while top-level cfg.* must keep
+    # user/CLI overrides (e.g., train.precision=32 for debugging stability).
     if "model" in cfg.get("dataset", {}):
-        cfg.model = OmegaConf.merge(cfg.model, cfg.dataset.model)
+        cfg.model = _merge_dataset_defaults(cfg.dataset.model, cfg.model)
     if "tasks" in cfg.get("dataset", {}):
         cfg.tasks = cfg.dataset.tasks
     if "train" in cfg.get("dataset", {}):
-        cfg.train = OmegaConf.merge(cfg.train, cfg.dataset.train)
+        cfg.train = _merge_dataset_defaults(cfg.dataset.train, cfg.train)
 
     # 3. Pre-Flight Validation (D6)
     # Validates EVERYTHING before touching GPU. Fast fail saves compute.
@@ -296,6 +369,9 @@ def main(cfg: DictConfig):
         LearningRateMonitor(logging_interval="step"),
         SOTAProgressBar(refresh_rate=1),
     ]
+    es_cb = build_early_stopping(cfg)
+    if es_cb is not None:
+        callbacks.append(es_cb)
 
     # 7. Logger Integration
     wandb_logger = None
