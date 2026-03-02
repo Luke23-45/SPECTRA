@@ -345,8 +345,8 @@ def main(cfg: DictConfig):
 
     # --- NASA-Grade Config Merge ---
     # Hydra namespaces dataset configs under cfg.dataset.*.
-    # IMPORTANT: dataset.* provides defaults, while top-level cfg.* must keep
-    # user/CLI overrides (e.g., train.precision=32 for debugging stability).
+    # dataset.* provides DEFAULTS; top-level cfg.* keeps CLI overrides
+    # (e.g., train.precision=32). Top-level wins so CLI intent is preserved.
     if "model" in cfg.get("dataset", {}):
         cfg.model = _merge_dataset_defaults(cfg.dataset.model, cfg.model)
     if "tasks" in cfg.get("dataset", {}):
