@@ -114,7 +114,8 @@ class SPECTRADataModule(pl.LightningDataModule):
             sampler = create_sepsis_aware_sampler(
                 dataset=self.train_ds,
                 sepsis_boost_factor=self.cfg.dataset.get("sepsis_boost", 5.0),
-                seed=self.cfg.seed
+                seed=self.cfg.seed,
+                target=self.cfg.dataset.get("sampler_target", "outcome"),
             )
             # Sampler is inherently Distributed-aware (Axe v3.2 StatefulSampler)
             return DataLoader(

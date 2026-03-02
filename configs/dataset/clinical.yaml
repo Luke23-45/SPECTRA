@@ -5,6 +5,7 @@ name: clinical
 dataset_dir: "datasets/sepsis_clinical_28"
 hf_repo: "hellxhell/sepsis-clinical-28"
 sepsis_boost: 10.0
+sampler_target: outcome
 subset_pct: 1.0  # CPM: Subsetting for fast piloting (1.0 = Full Benchmark)
 
 # ─── Model Overrides (Expert Clinical Spec) ───────────────────
@@ -23,6 +24,7 @@ tasks:
     num_classes: 1        # Binary classification
     manifold: expert      # High-freq discriminative signal
     weight: 1.0
+    pos_weight: 3.0        # ~3% positives => stronger positive gradient
 
   - name: phase
     type: classification
@@ -42,3 +44,7 @@ train:
   grad_clip: 2.0
   precision: "16-mixed"  # Speed up training
   log_every_n_steps: 10
+
+  early_stop: true
+  early_stop_patience: 3
+  early_stop_min_delta: 0.001
