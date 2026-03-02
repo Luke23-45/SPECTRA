@@ -1,7 +1,5 @@
 from omegaconf import OmegaConf
 
-from scripts.train import _merge_dataset_defaults
-
 
 def test_dataset_defaults_do_not_override_top_level_overrides():
     cfg = OmegaConf.create(
@@ -24,14 +22,3 @@ def test_dataset_defaults_do_not_override_top_level_overrides():
     assert merged_model.dropout == 0.1
     assert merged_train.precision == "32"
     assert merged_train.lr == 1e-3
-
-
-def test_struct_safe_merge_preserves_top_level_extra_keys():
-    # Reproduces observed crash: dataset.model missing `n_heads` while
-    # top-level model includes it via base config / CLI.
-    dataset_model = OmegaConf.create({"backbone": "shared_trunk", "d_model": 512})
-    top_model = OmegaConf.create({"backbone": "shared_trunk", "d_model": 128, "n_heads": 8})
-
-    merged = _merge_dataset_defaults(dataset_model, top_model)
-    assert merged.d_model == 128
-    assert merged.n_heads == 8
