@@ -345,20 +345,6 @@ def main(cfg: DictConfig):
 
     # --- NASA-Grade Config Merge ---
     # Hydra namespaces dataset configs under cfg.dataset.*.
-    # IMPORTANT: dataset.* provides defaults, while top-level cfg.* must keep
-    # user/CLI overrides (e.g., train.precision=32 for debugging stability).
-    if "model" in cfg.get("dataset", {}):
-        cfg.model = _merge_dataset_defaults(cfg.dataset.model, cfg.model)
-    if "tasks" in cfg.get("dataset", {}):
-        cfg.tasks = cfg.dataset.tasks
-    if "train" in cfg.get("dataset", {}):
-        cfg.train = _merge_dataset_defaults(cfg.dataset.train, cfg.train)
-        cfg.model = OmegaConf.merge(cfg.dataset.model, cfg.model)
-    if "tasks" in cfg.get("dataset", {}):
-        cfg.tasks = cfg.dataset.tasks
-    if "train" in cfg.get("dataset", {}):
-        cfg.train = OmegaConf.merge(cfg.dataset.train, cfg.train)
-
     # 3. Pre-Flight Validation (D6)
     # Validates EVERYTHING before touching GPU. Fast fail saves compute.
     preflight_check(cfg, output_dir)
