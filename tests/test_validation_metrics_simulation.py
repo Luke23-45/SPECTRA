@@ -30,14 +30,16 @@ def mock_clinical_config():
                 "type": "classification",
                 "num_classes": 1,
                 "loss": "bce",
-                "manifold": "both"
+                "manifold": "both",
+                "weight": 2.0
             },
             {
                 "name": "phase",
                 "type": "classification",
                 "num_classes": 3,
                 "loss": "cross_entropy",
-                "manifold": "planner"
+                "manifold": "planner",
+                "weight": 0.5
             }
         ],
         "train": {
@@ -98,6 +100,16 @@ def run_simulation():
         model.validation_step(batch, batch_idx=0)
     
     print(" ✓ validation_step executed without shape crashes.")
+
+    # Verify weighted total validation loss is respected
+    out_l = model.trainer.logged_metrics["val/outcome_loss"]
+    phase_l = model.trainer.logged_metrics["val/phase_loss"]
+    total_l = model.trainer.logged_metrics["val/total_loss"]
+    expected_total = 2.0 * out_l + 0.5 * phase_l
+    assert abs(total_l - expected_total) < 1e-5, (
+        f"Weighted val total loss mismatch: got={total_l}, expected={expected_total}"
+    )
+    print(" ✓ Weighted validation total loss verified.")
     
     # Check internal metric states
     out_state = model._val_metrics["outcome"]
