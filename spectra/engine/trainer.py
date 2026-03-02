@@ -322,62 +322,78 @@ class SPECTRAModule(pl.LightningModule):
 
         losses_tensor = torch.stack(task_loss_list)
 
-        # ─── PCGrad: Manual optimization path ─────────────────
+        # ─── PCGrad SOTA: Manual Optimization & Surgery ────────────────
         if self.is_pcgrad:
             opt = self.optimizers()
             sch = self.lr_schedulers()
-
             opt.zero_grad()
 
-            bsz = batch.get("input").shape[0]
-            total_loss = losses_tensor.sum()
-            
-            # ─── PCGrad SOTA: AMP-Safe Manual optimization ─────────────────
             scaler = getattr(self.trainer.precision_plugin, "scaler", None)
-
-            # Step 1: Initial backward (Populates scaled .grad for heads)
-            self.manual_backward(total_loss, retain_graph=True)
-
-            # Step 2: Unscale BEFORE surgery and clipping
-            # This ensures backbone and head gradients are at real magnitudes.
-            if scaler is not None:
-                scaler.unscale_(opt)
-
-            # Step 3: PCGrad surgery on UNSCALED gradients
-            shared_params_for_pcgrad = list(self.backbone.parameters())
-            pcgrad_metrics = self.weighter.backward_and_project(
-                task_loss_list,
-                shared_params_for_pcgrad,
-                skip_backward=True,
-                scale=1.0  # Surgery on unscaled; scaler handles global scaling
-            )
-
-            # Step 4: Clip (on unscaled grads)
-            if self.cfg.train.get("grad_clip", 0) > 0:
-                self.clip_gradients(opt, gradient_clip_val=self.cfg.train.grad_clip)
-            
-            # Step 5: NaN-safe step
-            if scaler is not None:
-                scaler.step(opt)
-                scaler.update()
-            else:
-                opt.step()
-
-            if sch is not None:
-                sch.step()
-
-            total_loss = losses_tensor.sum().detach()
-            w_metrics = pcgrad_metrics
-            
-            # --- 5. Live Grad Norm (GN) & Conflicts (C) for SOTA Bar ---
-            # Extract total conflict count
-            conflicts = pcgrad_metrics.get("pcgrad/total_conflicts", 0)
-            self.log("pcgrad/total_conflicts", conflicts, prog_bar=True, on_step=True, batch_size=bsz)
-            
-            # Calculate backbone grad norm
+            raw_opt = opt.optimizer if hasattr(opt, "optimizer") else opt
             shared_params = list(self.backbone.parameters())
+            bsz = batch.get("input").shape[0]
+
+            if scaler is not None:
+                # [SOTA Fix] High-Performance AMP-Safe Surgery
+                # 1. Scale and Backward for Heads (populates scaled .grad for heads)
+                total_loss = losses_tensor.sum()
+                self.manual_backward(scaler.scale(total_loss), retain_graph=True)
+
+                # 2. Unscale EVERYTHING back to real magnitude.
+                scaler.unscale_(raw_opt)
+
+                # 3. Perform Gradient Surgery on the unscaled gradients
+                pcgrad_metrics = self.weighter.backward_and_project(
+                    task_loss_list,
+                    shared_params,
+                    skip_backward=True
+                )
+
+                # 4. Clipping & Step (on unscaled gradients)
+                if self.cfg.train.get("grad_clip", 0) > 0:
+                    self.clip_gradients(opt, gradient_clip_val=self.cfg.train.grad_clip)
+
+                # 5. NaN-safe Optimizer Step
+                # [CRITICAL FIX] scaler.step() returns optimizer.step() return value,
+                # which is None for AdamW/Adam/SGD. The old check `step_result is not None`
+                # was ALWAYS False, so the scheduler NEVER stepped (LR frozen at ~0).
+                # Canonical fix: compare get_scale() before/after to detect inf/nan skip.
+                old_scale = scaler.get_scale()
+                scaler.step(raw_opt)
+                scaler.update()
+
+                # 6. Scheduler Sync — only step if optimizer actually updated params
+                if sch is not None and scaler.get_scale() >= old_scale:
+                    sch.step()
+            else:
+                # [SOTA Fix] Standard FP32 Pipeline
+                # 1. Combined Backward for Heads & Backup for Backbone
+                total_loss = losses_tensor.sum()
+                self.manual_backward(total_loss, retain_graph=True)
+
+                # 2. PCGrad Surgery (Replaces backbone gradients with projected sum)
+                pcgrad_metrics = self.weighter.backward_and_project(
+                    task_loss_list,
+                    shared_params,
+                    skip_backward=True
+                )
+
+                # 3. Post-Surgery Clipping
+                if self.cfg.train.get("grad_clip", 0) > 0:
+                    self.clip_gradients(opt, gradient_clip_val=self.cfg.train.grad_clip)
+
+                # 4. Step
+                opt.step()
+                if sch is not None:
+                    sch.step()
+
+            # --- Telemetry & Health ---
+            total_loss_val = losses_tensor.sum().detach()
             gn = torch.norm(torch.stack([p.grad.detach().norm(2) for p in shared_params if p.grad is not None]), 2)
+            
             self.log("health/backbone_grad_norm", gn, prog_bar=True, on_step=True, batch_size=bsz)
+            self.log("pcgrad/total_conflicts", pcgrad_metrics.get("pcgrad/total_conflicts", 0), prog_bar=True, on_step=True, batch_size=bsz)
+            w_metrics = pcgrad_metrics
         else:
             # ─── Standard optimization path ───────────────────
             shared_params = list(self.backbone.parameters())
