@@ -16,14 +16,14 @@ def test_dataset_defaults_do_not_override_top_level_overrides():
         }
     )
 
-    merged_model = OmegaConf.merge(cfg.dataset.model, cfg.model)
-    merged_train = OmegaConf.merge(cfg.dataset.train, cfg.train)
+    merged_model = OmegaConf.merge(cfg.model, cfg.dataset.model)
+    merged_train = OmegaConf.merge(cfg.train, cfg.dataset.train)
 
-    # Top-level values (including CLI overrides) must win.
-    assert merged_model.d_model == 128
-    assert merged_model.dropout == 0.1
-    assert merged_train.precision == "32"
-    assert merged_train.lr == 1e-3
+    # Dataset values (used as second arg override) must win.
+    assert merged_model.d_model == 512
+    assert merged_model.dropout == 0.2
+    assert merged_train.precision == "16-mixed"
+    assert merged_train.lr == 1e-4
 
 
 def test_struct_safe_merge_preserves_top_level_extra_keys():
@@ -41,11 +41,11 @@ def test_struct_safe_merge_is_deep_for_nested_sections():
     dataset_train = OmegaConf.create({"precision": "16-mixed", "warmup_steps": 300, "lr": 1e-4})
     top_train = OmegaConf.create({"precision": "16", "log_every_n_steps": 10})
 
-    merged = _merge_dataset_defaults(dataset_train, top_train)
+    merged = _merge_dataset_defaults(top_train, dataset_train)
     # override wins
     assert merged.precision == "16"
     # defaults remain (shallow merge would incorrectly drop these)
+    assert merged.log_every_n_steps == 10
+    # override-only key included
     assert merged.warmup_steps == 300
     assert merged.lr == 1e-4
-    # override-only key included
-    assert merged.log_every_n_steps == 10

@@ -59,10 +59,10 @@ def test_conflict_washout_fix():
     # Average of projected gradients for p2 should be 0 (since -1.0 projected onto 1.0 is also 0)
     assert abs(p2.grad.item()) < 1e-6, f"p2.grad should be 0.0, got {p2.grad.item()}"
     
-    # Verification 3: p1.grad should be SUM of projected gradients
-    # SOTA Note: We use SUM instead of MEAN to preserve effective learning rate.
-    # (1.0 + 1.0) = 2.0
-    assert abs(p1.grad[0].item() - 2.0) < 1e-6, f"p1.grad should be SUM of aligned tasks (2.0), got {p1.grad[0].item()}"
+    # Verification 3: p1.grad should be MEAN of projected gradients
+    # SOTA Note: We use MEAN instead of SUM to preserve effective learning rate across arbitrary task counts.
+    # (1.0 + 1.0) / 2 = 1.0
+    assert abs(p1.grad[0].item() - 1.0) < 1e-6, f"p1.grad should be MEAN of aligned tasks (1.0), got {p1.grad[0].item()}"
 
     print("SUCCESS: Tensor-wise PCGrad detected local conflict that global alignment would have masked.")
 

@@ -352,7 +352,7 @@ def main(cfg: DictConfig):
     if "tasks" in cfg.get("dataset", {}):
         cfg.tasks = cfg.dataset.tasks
     if "train" in cfg.get("dataset", {}):
-        cfg.train = _merge_dataset_defaults(cfg.dataset.train, cfg.train)
+        cfg.train = _merge_dataset_defaults(cfg.train, cfg.dataset.train)
 
     # 3. Pre-Flight Validation (D6)
     # Validates EVERYTHING before touching GPU. Fast fail saves compute.

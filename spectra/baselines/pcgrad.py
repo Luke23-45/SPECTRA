@@ -131,11 +131,11 @@ class PCGradWeighter(BaseWeighter):
                     
                     projected_grads.append(gi)
                 
-                # 3. Aggregation: SUM instead of MEAN
-                # Most MTL frameworks mistakenly use .mean(), which is equivalent 
-                # to dividing the learning rate by num_tasks. We use SUM to match 
-                # standard gradient behavior.
-                final_grad = torch.stack(projected_grads).sum(dim=0)
+                # 3. Aggregation: Dynamic MEAN
+                # Using SUM scales the gradient magnitudes entirely by num_tasks, requiring
+                # the LR to be retuned for every dataset. We use MEAN to preserve the
+                # effective learning rate scale across different task counts.
+                final_grad = torch.stack(projected_grads).mean(dim=0)
                 
                 # Dynamic scaling (e.g. for matching original magnitude if needed)
                 if scale != 1.0:
@@ -216,8 +216,8 @@ class PCGradWeighter(BaseWeighter):
 
                     projected_grads.append(gi)
 
-                # SUM (not mean) to preserve effective learning rate
-                final_grad = torch.stack(projected_grads).sum(dim=0)
+                # MEAN to preserve effective learning rate across arbitrary task counts
+                final_grad = torch.stack(projected_grads).mean(dim=0)
 
                 # Assign to parameter.grad
                 if param.grad is None:

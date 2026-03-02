@@ -4,7 +4,7 @@
 name: clinical
 dataset_dir: "datasets/sepsis_clinical_28"
 hf_repo: "hellxhell/sepsis-clinical-28"
-sepsis_boost: 10.0
+sepsis_boost: 5.0
 sampler_target: outcome
 subset_pct: 1.0  # CPM: Subsetting for fast piloting (1.0 = Full Benchmark)
 
@@ -37,7 +37,7 @@ tasks:
 train:
   epochs: 100
   batch_size: 64         # Standard for clinical time-series
-  lr: 0.0001              # Stable learning rate
+  lr: 0.00005              # Stable learning rate
   min_lr: 0.000001
   warmup_steps: 300
   weight_decay: 0.0001
