@@ -103,6 +103,27 @@ def _build_loss(task_cfg: DictConfig):
         raise ValueError(f"Unknown loss: {loss_name}")
 
 
+def _build_val_loss(task_cfg: DictConfig):
+    """Factory: builds UNWEIGHTED loss for validation (no pos_weight bias).
+
+    Why separate? Training uses pos_weight to compensate for sepsis_boost
+    oversampling, but validation runs on the natural distribution. Using
+    pos_weight in val inflates losses on the rare positives and creates a
+    misleading loss signal that diverges from true model quality.
+    """
+    loss_name = task_cfg.get("loss", "mse")
+    if loss_name == "bce":
+        # Deliberately omit pos_weight for unbiased validation
+        return nn.BCEWithLogitsLoss()
+    elif loss_name == "cross_entropy":
+        ignore_idx = task_cfg.get("ignore_index", -100)
+        return nn.CrossEntropyLoss(ignore_index=ignore_idx)
+    else:
+        # For all other loss types, val loss == train loss
+        return _build_loss(task_cfg)
+
+
+
 class SPECTRAModule(pl.LightningModule):
     """
     Unified training wrapper for SPECTRA experiments.
@@ -149,6 +170,7 @@ class SPECTRAModule(pl.LightningModule):
         # ─── 3. Build Task Heads ────────────────────────────────
         self.heads = nn.ModuleDict()
         self.task_losses = nn.ModuleDict()
+        self._val_losses = nn.ModuleDict()  # Unbiased val losses (no pos_weight)
         self.task_types = {}
         self.task_manifolds = {}
         self.task_weights = {}
@@ -162,6 +184,7 @@ class SPECTRAModule(pl.LightningModule):
 
             self.heads[name] = _build_head(task_cfg, d_head)
             self.task_losses[name] = _build_loss(task_cfg)
+            self._val_losses[name] = _build_val_loss(task_cfg)
             self.task_types[name] = task_cfg.get("type", "regression")
             self.task_manifolds[name] = task_cfg.get("manifold", "planner")
             self.task_weights[name] = float(task_cfg.get("weight", 1.0))
@@ -317,12 +340,20 @@ class SPECTRAModule(pl.LightningModule):
                 if target.dim() > pred.dim():
                     target = target.squeeze(-1)
 
+            # [SOTA Fix] Label smoothing for binary classification to prevent
+            # overconfidence on the boosted training distribution.
+            # Smooths targets: 1.0 → 0.975, 0.0 → 0.025
+            smooth_target = target
+            if name == "outcome" and self.task_types.get(name) == "classification":
+                eps = 0.05
+                smooth_target = target * (1.0 - eps) + 0.5 * eps
+
             # Masked losses (depth, normals) need access to metadata
             loss_fn = self.task_losses[name]
             if hasattr(loss_fn, 'requires_mask') and loss_fn.requires_mask and "meta" in batch:
                 loss = loss_fn(pred, target, batch["meta"])
             else:
-                loss = loss_fn(pred, target)
+                loss = loss_fn(pred, smooth_target)
             task_loss_list.append(loss)
             weighted_task_loss_list.append(loss * self.task_weights[name])
             loss_dict[name] = loss
@@ -524,12 +555,12 @@ class SPECTRAModule(pl.LightningModule):
                 if target.dim() > pred.dim():
                     target = target.squeeze(-1)
 
-            # Masked losses need metadata
-            loss_fn = self.task_losses[name]
-            if hasattr(loss_fn, 'requires_mask') and loss_fn.requires_mask and "meta" in batch:
-                loss = loss_fn(pred, target, batch["meta"])
+            # [SOTA Fix] Use UNBIASED val loss (no pos_weight) for true distribution
+            val_loss_fn = self._val_losses[name]
+            if hasattr(val_loss_fn, 'requires_mask') and val_loss_fn.requires_mask and "meta" in batch:
+                loss = val_loss_fn(pred, target, batch["meta"])
             else:
-                loss = loss_fn(pred, target)
+                loss = val_loss_fn(pred, target)
             self.log(f"val/{name}_loss", loss, sync_dist=True, prog_bar=False, batch_size=batch.get("input").shape[0])
             total_val_loss = total_val_loss + loss * self.task_weights[name]
 
@@ -552,7 +583,8 @@ class SPECTRAModule(pl.LightningModule):
                     # Binary metrics expect int targets; multiclass metrics also
                     # require integer class indices. Keep this explicit for safety.
                     if name == "outcome":
-                        metric_obj.update(p, t.int())
+                        # Convert logits to probabilities to fix `threshold=0.5` bug in BinaryRecall
+                        metric_obj.update(torch.sigmoid(p), t.int())
                     else:
                         metric_obj.update(p, t.long())
 

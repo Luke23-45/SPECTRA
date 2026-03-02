@@ -131,11 +131,10 @@ class PCGradWeighter(BaseWeighter):
                     
                     projected_grads.append(gi)
                 
-                # 3. Aggregation: Dynamic MEAN
-                # Using SUM scales the gradient magnitudes entirely by num_tasks, requiring
-                # the LR to be retuned for every dataset. We use MEAN to preserve the
-                # effective learning rate scale across different task counts.
-                final_grad = torch.stack(projected_grads).mean(dim=0)
+                # 3. Aggregation: Dynamic SUM
+                # Using SUM matches standard multi-task learning gradient accumulation
+                # and prevents scaling mismatch with the heads (which receive sum-level loss grads).
+                final_grad = torch.stack(projected_grads).sum(dim=0)
                 
                 # Dynamic scaling (e.g. for matching original magnitude if needed)
                 if scale != 1.0:
@@ -216,8 +215,8 @@ class PCGradWeighter(BaseWeighter):
 
                     projected_grads.append(gi)
 
-                # MEAN to preserve effective learning rate across arbitrary task counts
-                final_grad = torch.stack(projected_grads).mean(dim=0)
+                # SUM to match standard multi-task backward() and fix scaling mismatch with heads
+                final_grad = torch.stack(projected_grads).sum(dim=0)
 
                 # Assign to parameter.grad
                 if param.grad is None:

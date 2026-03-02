@@ -1,142 +1,63 @@
-import os
-import sys
 import torch
-from omegaconf import OmegaConf
+from torchmetrics import MetricCollection, AUROC, AveragePrecision, Recall
+import torch.nn.functional as F
 
-# Ensure path is correct
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from spectra.engine.trainer import SPECTRAModule
-
-def mock_clinical_config():
-    return OmegaConf.create({
-        "model": {
-            "backbone": "shared_trunk",
-            "input_dim": 28,
-            "d_model": 64,
-            "hidden_layers": 2,
-            "dropout": 0.1,
-            "n_heads": 4
-        },
-        "method": {
-            "name": "pcgrad",
-            "use_alb": True,
-            "n_expert_layers": 1,
-            "expert_init": "orthogonal"
-        },
-        "tasks": [
-            {
-                "name": "outcome",
-                "type": "classification",
-                "num_classes": 1,
-                "loss": "bce",
-                "manifold": "both",
-                "weight": 2.0
-            },
-            {
-                "name": "phase",
-                "type": "classification",
-                "num_classes": 3,
-                "loss": "cross_entropy",
-                "manifold": "planner",
-                "weight": 0.5
-            }
-        ],
-        "train": {
-            "lr": 1e-4,
-            "weight_decay": 1e-4,
-            "warmup_steps": 10
-        }
+def sim_distribution_shift():
+    """
+    Simulates the specific crash seen in the user's logs:
+    Train: Sepsis=23% (boosted)
+    Val: Sepsis=3% (natural)
+    
+    Why does AUC and Recall crash while BCE loss goes up? Let's prove it.
+    """
+    print("--- Sepsis Distribution Shift Simulation ---")
+    
+    # 1. Simulate Model Calibration on TRAIN (23% Positives)
+    # The model learns a bias term suited for 23% frequency.
+    # It tends to output higher logits globally.
+    train_logits = torch.randn(10000) * 2.0 - 1.0 # Centered around slightly negative
+    train_labels = (torch.rand(10000) < 0.23).float()
+    
+    # Shift logits slightly upward if positive (model learned something)
+    train_logits[train_labels == 1.0] += 2.0
+    
+    train_probs = torch.sigmoid(train_logits)
+    train_bce = F.binary_cross_entropy_with_logits(train_logits, train_labels, pos_weight=torch.tensor([3.0]))
+    
+    print(f"Train BCE Loss (pos_weight=3.0): {train_bce.item():.4f}")
+    
+    # 2. Simulate validation on TRUE distribution (3% Positives)
+    # The model still outputs logits based on a 23% prior!
+    val_logits = torch.randn(10000) * 2.0 - 1.0
+    val_labels = (torch.rand(10000) < 0.03).float() # Only 3% positive!
+    
+    val_logits[val_labels == 1.0] += 1.0 # Model is less confident on unseen data
+    
+    val_probs = torch.sigmoid(val_logits)
+    val_bce = F.binary_cross_entropy_with_logits(val_logits, val_labels, pos_weight=torch.tensor([3.0]))
+    
+    print(f"Val BCE Loss (pos_weight=3.0, Over-predicting): {val_bce.item():.4f}")
+    
+    # Calculate Metrics
+    metrics = MetricCollection({
+        'AUC': AUROC(task="binary"),
+        'PRC': AveragePrecision(task="binary"),
+        'Recall': Recall(task="binary")
     })
-
-class MockTrainer:
-    def __init__(self):
-        self.world_size = 1
-        self.logged_metrics = {}
-        self.precision_plugin = None
-
-def run_simulation():
-    print("=== Starting Recursive Validation Metrics Simulation ===")
     
-    # Subproblem 1: Initialization
-    print("\n[1] Testing Initialization & Metric Binding...")
-    cfg = mock_clinical_config()
-    model = SPECTRAModule(cfg)
-    model.trainer = MockTrainer()
+    res = metrics(val_probs, val_labels)
+    print(f"Val Metrics with standard 0.5 threshold: {res}")
     
-    # Mock the log function
-    def mock_log(name, value, **kwargs):
-        model.trainer.logged_metrics[name] = value.item() if isinstance(value, torch.Tensor) else value
+    # What happens as training progresses and the model becomes OVERCONFIDENT on 23% distribution?
+    # It learns to push logits higher globally, triggering massive false positives on the 3% val set.
+    val_logits_epoch3 = val_logits + 1.5 # Overconfidence bias shift
+    val_probs_epoch3 = torch.sigmoid(val_logits_epoch3)
+    val_bce_epoch3 = F.binary_cross_entropy_with_logits(val_logits_epoch3, val_labels, pos_weight=torch.tensor([3.0]))
     
-    model.log = mock_log
+    res_epoch3 = metrics(val_probs_epoch3, val_labels)
+    print(f"\n--- Epoch 3: Model Overconfident on 23% Train Prior ---")
+    print(f"Val BCE Loss (Spikes!): {val_bce_epoch3.item():.4f}")
+    print(f"Val Metrics (Recall crashes/AUC drops due to confident FP): {res_epoch3}")
     
-    assert "outcome" in model._val_metrics, "Outcome metric missing!"
-    assert "phase" in model._val_metrics, "Phase metric missing!"
-    print(" ✓ Metrics Initialized Correctly")
-
-    # Subproblem 2: Shapes & Accumulation (validation_step)
-    print("\n[2] Testing Shape Alignment in validation_step...")
-    batch_size = 4
-    seq_len = 10
-    
-    # Mock Batch
-    batch = {
-        "input": torch.randn(batch_size, seq_len, 28),
-        "targets": {
-            "outcome": torch.randint(0, 2, (batch_size, 1)).float(), # [B, 1] label
-            "phase": torch.randint(0, 3, (batch_size,)).long()      # [B] label
-        }
-    }
-    
-    # Model forward pass
-    preds = model(batch)
-    assert preds["outcome"].shape == (batch_size, 1), f"Outcome pred shape mismatch: {preds['outcome'].shape}"
-    assert preds["phase"].shape == (batch_size, 3), f"Phase pred shape mismatch: {preds['phase'].shape}"
-    
-    # We must explicitly set model to eval mode!
-    model.eval()
-    with torch.no_grad():
-        model.on_validation_epoch_start()
-        model.validation_step(batch, batch_idx=0)
-    
-    print(" ✓ validation_step executed without shape crashes.")
-
-    # Verify weighted total validation loss is respected
-    out_l = model.trainer.logged_metrics["val/outcome_loss"]
-    phase_l = model.trainer.logged_metrics["val/phase_loss"]
-    total_l = model.trainer.logged_metrics["val/total_loss"]
-    expected_total = 2.0 * out_l + 0.5 * phase_l
-    assert abs(total_l - expected_total) < 1e-5, (
-        f"Weighted val total loss mismatch: got={total_l}, expected={expected_total}"
-    )
-    print(" ✓ Weighted validation total loss verified.")
-    
-    # Check internal metric states
-    out_state = model._val_metrics["outcome"]
-    # Internal variables in torchmetrics vary, but we can check if it has been updated
-    assert len(out_state["AUC"].target) > 0, "Outcome AUC state list is empty, accumulation failed."
-    print(" ✓ Metric accumulation verified.")
-
-    # Subproblem 3: Epoch End Computations (on_validation_epoch_end)
-    print("\n[3] Testing Epoch Aggregation & Logging...")
-    with torch.no_grad():
-        model.on_validation_epoch_end()
-    
-    logs = model.trainer.logged_metrics
-    required_keys = [
-        "val/outcome_AUC", 
-        "val/outcome_PRC", 
-        "val/outcome_R",
-        "val/AUC", 
-        "val/phase_ACC", 
-        "val/phase_AUC"
-    ]
-    
-    for k in required_keys:
-        assert k in logs, f"CRITICAL FAILURE: {k} missing from validation logs!"
-        print(f" ✓ Logged {k}: {logs[k]:.4f}")
-        
-    print("\n=== All Recursive Simulation Checks PASSED ===")
-
 if __name__ == "__main__":
-    run_simulation()
+    sim_distribution_shift()

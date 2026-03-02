@@ -33,6 +33,14 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor, TQDMProgressBar
 from pytorch_lightning.loggers import WandbLogger
+import warnings
+
+# --- Warning Filters ---
+# Suppress torchmetrics warnings about undefined positive/negative samples and recall calculations 
+# which frequently occur during the artificial small batches constructed by Lightning's sanity checker.
+warnings.filterwarnings("ignore", ".*No positive samples in targets.*")
+warnings.filterwarnings("ignore", ".*No negative samples in targets.*")
+warnings.filterwarnings("ignore", ".*No positive samples found in target.*")
 
 from spectra.data.datamodule import SPECTRADataModule
 from spectra.engine.trainer import SPECTRAModule
