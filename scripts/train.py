@@ -151,6 +151,26 @@ def _dataset_key(cfg: DictConfig) -> str:
     return dcfg.get("name", dcfg.get("benchmark", "synthetic"))
 
 
+def _merge_dataset_defaults(base_cfg: DictConfig, override_cfg: DictConfig) -> DictConfig:
+    """
+    Merge dataset defaults with top-level overrides without struct-key crashes.
+
+    OmegaConf structured nodes can reject unknown keys during direct merge
+    (`ConfigKeyError`). We convert both to plain dict first, then recreate a
+    DictConfig so CLI/top-level keys (e.g. `model.n_heads`) are preserved.
+    """
+    base = OmegaConf.to_container(base_cfg, resolve=False) if base_cfg is not None else {}
+    override = OmegaConf.to_container(override_cfg, resolve=False) if override_cfg is not None else {}
+    if not isinstance(base, dict):
+        base = {}
+    if not isinstance(override, dict):
+        override = {}
+    # Deep merge on plain containers (not structured nodes) so nested sections
+    # are preserved while top-level/CLI overrides still win.
+    merged = OmegaConf.merge(base, override)
+    return OmegaConf.create(merged)
+
+
 def build_checkpoints(cfg: DictConfig, output_dir: Path):
     """
     Build ModelCheckpoint callbacks appropriate for the benchmark.
@@ -328,6 +348,11 @@ def main(cfg: DictConfig):
     # IMPORTANT: dataset.* provides defaults, while top-level cfg.* must keep
     # user/CLI overrides (e.g., train.precision=32 for debugging stability).
     if "model" in cfg.get("dataset", {}):
+        cfg.model = _merge_dataset_defaults(cfg.dataset.model, cfg.model)
+    if "tasks" in cfg.get("dataset", {}):
+        cfg.tasks = cfg.dataset.tasks
+    if "train" in cfg.get("dataset", {}):
+        cfg.train = _merge_dataset_defaults(cfg.dataset.train, cfg.train)
         cfg.model = OmegaConf.merge(cfg.dataset.model, cfg.model)
     if "tasks" in cfg.get("dataset", {}):
         cfg.tasks = cfg.dataset.tasks
