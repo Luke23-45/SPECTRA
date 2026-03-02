@@ -334,55 +334,115 @@ class SPECTRAModule(pl.LightningModule):
             bsz = batch.get("input").shape[0]
 
             if scaler is not None:
-                # [SOTA Fix] High-Performance AMP-Safe Surgery
-                # 1. Scale and Backward for Heads (populates scaled .grad for heads)
+                # ═══════════════════════════════════════════════════════════
+                # SOTA AMP-Safe PCGrad Pipeline (v2 — Clean Gradient Flow)
+                #
+                # Key insight: GradScaler's scale factor is a uniform scalar,
+                # so PCGrad's dot-product comparisons are scale-invariant.
+                # We compute ALL gradients via autograd.grad on SCALED losses,
+                # do surgery on the scaled gradients, then let scaler.unscale_()
+                # uniformly remove the scaling. This avoids the magnitude
+                # mismatch bug where backbone got raw fp16 gradients while
+                # heads got properly scaled/unscaled gradients.
+                # ═══════════════════════════════════════════════════════════
+
+                # For NaN guard and logging (no gradient involvement)
                 total_loss = losses_tensor.sum()
-                self.manual_backward(scaler.scale(total_loss), retain_graph=True)
 
-                # 2. Unscale EVERYTHING back to real magnitude.
-                scaler.unscale_(raw_opt)
+                # 1. Per-task backbone gradients (SCALED magnitude)
+                task_grads = []
+                for i, task_loss in enumerate(task_loss_list):
+                    grads = torch.autograd.grad(
+                        scaler.scale(task_loss), shared_params,
+                        retain_graph=True,
+                        allow_unused=True,
+                    )
+                    grads = [
+                        g if g is not None else torch.zeros_like(p)
+                        for g, p in zip(grads, shared_params)
+                    ]
+                    task_grads.append(grads)
 
-                # 3. Perform Gradient Surgery on the unscaled gradients
-                pcgrad_metrics = self.weighter.backward_and_project(
-                    task_loss_list,
-                    shared_params,
-                    skip_backward=True
+                # 2. PCGrad surgery + assignment to backbone .grad
+                pcgrad_metrics = self.weighter.project_and_assign(
+                    task_grads, shared_params
                 )
 
-                # 4. Clipping & Step (on unscaled gradients)
+                # 3. Head gradients: each head sees ONLY its own task loss
+                #    (fixes cross-contamination where heads saw all losses)
+                for task_name, task_loss in zip(self.task_names, task_loss_list):
+                    head_params = list(self.heads[task_name].parameters())
+                    if not head_params:
+                        continue
+                    head_grads = torch.autograd.grad(
+                        scaler.scale(task_loss), head_params,
+                        retain_graph=True,
+                        allow_unused=True,
+                    )
+                    for p, g in zip(head_params, head_grads):
+                        if g is not None:
+                            p.grad = g
+
+                # 4. Unscale ALL gradients (backbone + heads) uniformly
+                scaler.unscale_(raw_opt)
+
+                # 5. Gradient clipping (on properly-unscaled gradients)
                 if self.cfg.train.get("grad_clip", 0) > 0:
                     self.clip_gradients(opt, gradient_clip_val=self.cfg.train.grad_clip)
 
-                # 5. NaN-safe Optimizer Step
-                # [CRITICAL FIX] scaler.step() returns optimizer.step() return value,
-                # which is None for AdamW/Adam/SGD. The old check `step_result is not None`
-                # was ALWAYS False, so the scheduler NEVER stepped (LR frozen at ~0).
-                # Canonical fix: compare get_scale() before/after to detect inf/nan skip.
+                # 6. NaN-safe Optimizer Step
                 old_scale = scaler.get_scale()
                 scaler.step(raw_opt)
                 scaler.update()
 
-                # 6. Scheduler Sync — only step if optimizer actually updated params
+                # 7. Scheduler Sync — only step if optimizer actually updated
                 if sch is not None and scaler.get_scale() >= old_scale:
                     sch.step()
             else:
-                # [SOTA Fix] Standard FP32 Pipeline
-                # 1. Combined Backward for Heads & Backup for Backbone
-                total_loss = losses_tensor.sum()
-                self.manual_backward(total_loss, retain_graph=True)
+                # ═══════════════════════════════════════════════════════════
+                # Standard FP32 Pipeline (same clean gradient flow)
+                # ═══════════════════════════════════════════════════════════
 
-                # 2. PCGrad Surgery (Replaces backbone gradients with projected sum)
-                pcgrad_metrics = self.weighter.backward_and_project(
-                    task_loss_list,
-                    shared_params,
-                    skip_backward=True
+                total_loss = losses_tensor.sum()
+
+                # 1. Per-task backbone gradients
+                task_grads = []
+                for i, task_loss in enumerate(task_loss_list):
+                    grads = torch.autograd.grad(
+                        task_loss, shared_params,
+                        retain_graph=True,
+                        allow_unused=True,
+                    )
+                    grads = [
+                        g if g is not None else torch.zeros_like(p)
+                        for g, p in zip(grads, shared_params)
+                    ]
+                    task_grads.append(grads)
+
+                # 2. PCGrad surgery + assignment
+                pcgrad_metrics = self.weighter.project_and_assign(
+                    task_grads, shared_params
                 )
 
-                # 3. Post-Surgery Clipping
+                # 3. Head gradients (per-task isolation)
+                for task_name, task_loss in zip(self.task_names, task_loss_list):
+                    head_params = list(self.heads[task_name].parameters())
+                    if not head_params:
+                        continue
+                    head_grads = torch.autograd.grad(
+                        task_loss, head_params,
+                        retain_graph=True,
+                        allow_unused=True,
+                    )
+                    for p, g in zip(head_params, head_grads):
+                        if g is not None:
+                            p.grad = g
+
+                # 4. Gradient clipping
                 if self.cfg.train.get("grad_clip", 0) > 0:
                     self.clip_gradients(opt, gradient_clip_val=self.cfg.train.grad_clip)
 
-                # 4. Step
+                # 5. Step
                 opt.step()
                 if sch is not None:
                     sch.step()
