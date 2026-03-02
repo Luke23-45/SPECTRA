@@ -206,7 +206,7 @@ class SPECTRAModule(pl.LightningModule):
         appropriate metric object. Non-NYUv2 tasks get no metric object
         (losses suffice for synthetic/clinical stop-go decisions).
         """
-        self._val_metrics: Dict[str, Any] = {}
+        self._val_metrics = nn.ModuleDict()
         num_classes = 13
         ignore_idx  = 255
 
@@ -332,30 +332,37 @@ class SPECTRAModule(pl.LightningModule):
             bsz = batch.get("input").shape[0]
             total_loss = losses_tensor.sum()
             
-            # [Axe AMP Surgery] Retrieve current scale before manual_backward
-            # This ensures backbone projection parity with the head gradients.
+            # ─── PCGrad SOTA: AMP-Safe Manual optimization ─────────────────
             scaler = getattr(self.trainer.precision_plugin, "scaler", None)
-            current_scale = 1.0
-            if scaler is not None and hasattr(scaler, "get_scale"):
-                current_scale = scaler.get_scale()
 
-            # Step 1: Initial backward via PTL (Handles Heads + Scaler Initialization)
-            # We MUST retain the graph for PCGrad's subsequent per-task autograd.grad calls.
+            # Step 1: Initial backward (Populates scaled .grad for heads)
             self.manual_backward(total_loss, retain_graph=True)
 
-            # Step 2: PCGrad projection (Backbone Only)
-            # We skip the internal backward since we just did it via PTL.
+            # Step 2: Unscale BEFORE surgery and clipping
+            # This ensures backbone and head gradients are at real magnitudes.
+            if scaler is not None:
+                scaler.unscale_(opt)
+
+            # Step 3: PCGrad surgery on UNSCALED gradients
             shared_params_for_pcgrad = list(self.backbone.parameters())
             pcgrad_metrics = self.weighter.backward_and_project(
                 task_loss_list,
                 shared_params_for_pcgrad,
                 skip_backward=True,
-                scale=current_scale
+                scale=1.0  # Surgery on unscaled; scaler handles global scaling
             )
 
+            # Step 4: Clip (on unscaled grads)
             if self.cfg.train.get("grad_clip", 0) > 0:
                 self.clip_gradients(opt, gradient_clip_val=self.cfg.train.grad_clip)
-            opt.step()
+            
+            # Step 5: NaN-safe step
+            if scaler is not None:
+                scaler.step(opt)
+                scaler.update()
+            else:
+                opt.step()
+
             if sch is not None:
                 sch.step()
 
@@ -402,6 +409,12 @@ class SPECTRAModule(pl.LightningModule):
         return None if self.is_pcgrad else total_loss
 
     def on_train_batch_end(self, outputs: Any, batch: Any, batch_idx: int) -> None:
+        # [SPECTRA FIX] Post-step manifold projection for B-PGS
+        # Reference: docs/models/wrapper_generalist.py L2803-2805
+        # Prevents theta drift into sigmoid saturation zones
+        if hasattr(self.weighter, 'project_parameters'):
+            self.weighter.project_parameters()
+
         # Periodic health check: Log backbone weight norm to detect dying weights
         if batch_idx % 100 == 0:
             shared_params = list(self.backbone.parameters())

@@ -165,3 +165,8 @@ docs/
 ry.md
 datasets/
 lightning_logs/
+temp_logs1.md
+logs_bpgs.md
+loss_report.md
+report_main.md
+logs_pcgrad.md

@@ -33,6 +33,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.distributed as dist
 
 logger = logging.getLogger("spectra.bpgs")
@@ -238,19 +239,35 @@ class BPGSScaler(nn.Module):
         # 4. Get bounded log-variances (Sigmoid Manifold)
         log_vars = self.get_log_vars()
 
-        # 5. Bayesian loss computation (Kendall et al. 2018)
-        # L = Σ [ 0.5 * precision_i * L_i + 0.5 * s_i ]
-        # where precision_i = exp(-s_i)
+        # 5. Decoupled Bayesian Loss (Kendall et al. 2018, SPECTRA Improvement)
+        #
+        # CRITICAL FIX: Decouple θ-gradients and σ-gradients to prevent
+        # negative loss divergence. Reference: docs/models/components/loss_scaler.py
+        #
+        # Stream 1 (θ-loss): Network sees precision as a FIXED weight.
+        #   L_θ = Σ [ 0.5 * sg[exp(-s_i)] * L_i ]
+        #
+        # Stream 2 (σ-loss): Uncertainty sees smoothed EMA loss (always ≥ 0).
+        #   L_σ = Σ [ 0.5 * exp(-s_i) * sg[softplus(L̄_i^EMA)] + 0.5 * s_i ]
         #
         # CRITICAL: Cast to fp32 before exp() even under AMP (fp16 context).
         # exp(-log_var) for log_var << 0 produces very large precision values
         # that SILENTLY OVERFLOW fp16 (max ~65504), poisoning the loss.
-        # This is exactly what torch.nn.functional.cross_entropy does internally.
         log_vars_fp32 = log_vars.float()
         losses_fp32   = losses.float()
         precision     = torch.exp(-log_vars_fp32)
-        scaled_losses = 0.5 * precision * losses_fp32 + 0.5 * log_vars_fp32
-        total_loss    = scaled_losses.sum()
+
+        # Stream 1: Network parameter gradients (precision is a fixed weight)
+        # precision.detach() ensures network cannot game uncertainty to reduce loss
+        theta_loss = (0.5 * precision.detach() * losses_fp32).sum()
+
+        # Stream 2: Uncertainty parameter gradients
+        # F.softplus(loss_ema) guarantees non-negative loss signal (softplus ≥ ln2 ≈ 0.693)
+        # .detach() breaks the gradient path from σ back to the network
+        smooth_ema = F.softplus(self.loss_ema.float()).detach()
+        sigma_loss = (0.5 * precision * smooth_ema + 0.5 * log_vars_fp32).sum()
+
+        total_loss = theta_loss + sigma_loss
         # Cast back to input dtype to preserve AMP compatibility downstream
         total_loss = total_loss.to(losses.dtype)
 
@@ -271,6 +288,20 @@ class BPGSScaler(nn.Module):
     # =================================================================
     # UTILITIES
     # =================================================================
+
+    @torch.no_grad()
+    def project_parameters(self):
+        """
+        Post-step manifold projection.
+
+        Clamps theta to prevent drift into sigmoid saturation zones
+        where gradients vanish (sigmoid'(x) → 0 for |x| > 10).
+
+        Reference: docs/models/components/loss_scaler.py L211-237
+        Called after each optimizer step (see trainer.py on_train_batch_end).
+        """
+        max_theta = 10.0  # sigmoid(10) ≈ 0.99995 — practically at boundary
+        self.theta.data.clamp_(-max_theta, max_theta)
 
     def get_effective_weights(self) -> torch.Tensor:
         """Returns the effective task weights (0.5 * precision) as a detached tensor."""

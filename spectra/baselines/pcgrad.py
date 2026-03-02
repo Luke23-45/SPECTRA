@@ -106,62 +106,56 @@ class PCGradWeighter(BaseWeighter):
             ])
             task_grads.append(flat)
 
-        # 2. Pairwise projection (random order as in the paper)
+        # 2. Tensor-wise projection (SOTA Fix for Conflict Washout)
+        # Instead of one global projection, we project each parameter tensor 
+        # independently to prevent aligned layers from masking conflicting ones.
         conflict_counts = torch.zeros(self.num_tasks, device=task_losses[0].device)
-        projected = []
-
-        for i in range(self.num_tasks):
-            gi = task_grads[i].clone()
-            order = list(range(self.num_tasks))
-            random.shuffle(order)
-
-            for j in order:
-                if i == j:
-                    continue
-                gj = task_grads[j]
-                dot = gi.dot(gj)
-
-                # [SOTA Async Patch] Replace blocking `if dot < 0:` with tensor ops
-                is_conflict = (dot < 0)
-                
-                # Compute projection vector
-                proj = (dot / (gj.norm() ** 2 + 1e-8)) * gj
-                
-                # Apply only if conflict (avoids CPU-GPU sync pipeline stall)
-                gi = torch.where(is_conflict, gi - proj, gi)
-                conflict_counts[i] += is_conflict.float()
-
-            projected.append(gi)
-
-        # 3. Average projected gradients
-        final_grad = torch.stack(projected).mean(dim=0)
-
-        # 3.5. DDP Synchronization
-        if torch.distributed.is_initialized():
-            torch.distributed.all_reduce(final_grad, op=torch.distributed.ReduceOp.SUM)
-            final_grad /= torch.distributed.get_world_size()
-
-        # 4. Assign gradients to parameters (with optional scaling)
+        
         offset = 0
         for param in shared_params:
             numel = param.numel()
-            g_slice = final_grad[offset:offset + numel].reshape(param.shape)
+            # Slice the flattened task gradients for this specific tensor
+            param_task_grads = [tg[offset:offset + numel] for tg in task_grads]
             
-            # [Axe Scaling Patch] Apply scale factor to match AMP expectations
-            if scale != 1.0:
-                g_slice = g_slice * scale
+            projected = []
+            for i in range(self.num_tasks):
+                gi = param_task_grads[i].clone()
+                order = list(range(self.num_tasks))
+                random.shuffle(order)
 
+                for j in order:
+                    if i == j: continue
+                    gj = param_task_grads[j]
+                    dot = gi.dot(gj)
+                    
+                    # [SOTA Async Patch] Torch.where avoids CPU-GPU pipeline stall
+                    is_conflict = (dot < 0)
+                    proj = (dot / (gj.norm() ** 2 + 1e-8)) * gj
+                    gi = torch.where(is_conflict, gi - proj, gi)
+                    conflict_counts[i] += is_conflict.float()
+
+                projected.append(gi)
+            
+            # Average projected gradients for this tensor
+            final_param_grad = torch.stack(projected).mean(dim=0).reshape(param.shape)
+            
+            # 3. DDP Synchronization per-tensor (if needed)
+            if torch.distributed.is_initialized():
+                torch.distributed.all_reduce(final_param_grad, op=torch.distributed.ReduceOp.SUM)
+                final_param_grad /= torch.distributed.get_world_size()
+
+            # 4. Assign gradients to parameter
             if param.grad is None:
-                param.grad = g_slice.clone()
+                param.grad = final_param_grad.clone()
             else:
-                param.grad.copy_(g_slice)
+                param.grad.copy_(final_param_grad)
+                
             offset += numel
 
         # Update running conflict counts (async)
         with torch.no_grad():
             self.conflict_count.lerp_(conflict_counts, 0.1)
 
-        # [SOTA Async Patch] Removed .item() to prevent CPU-GPU blocking at epoch tail
         metrics = {
             f"pcgrad/conflict_{i}": conflict_counts[i]
             for i in range(self.num_tasks)
