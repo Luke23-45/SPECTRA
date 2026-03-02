@@ -348,7 +348,7 @@ def main(cfg: DictConfig):
     # dataset.* provides DEFAULTS; top-level cfg.* keeps CLI overrides
     # (e.g., train.precision=32). Top-level wins so CLI intent is preserved.
     if "model" in cfg.get("dataset", {}):
-        cfg.model = _merge_dataset_defaults(cfg.dataset.model, cfg.model)
+        cfg.model = _merge_dataset_defaults(cfg.model, cfg.dataset.model)
     if "tasks" in cfg.get("dataset", {}):
         cfg.tasks = cfg.dataset.tasks
     if "train" in cfg.get("dataset", {}):
