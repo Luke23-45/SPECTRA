@@ -369,6 +369,8 @@ class SPECTRAModule(pl.LightningModule):
             scaler = getattr(self.trainer.precision_plugin, "scaler", None)
             raw_opt = opt.optimizer if hasattr(opt, "optimizer") else opt
             shared_params = list(self.backbone.parameters())
+            if self.use_alb:
+                shared_params += list(self.alb.parameters())
             bsz = batch.get("input").shape[0]
 
             if scaler is not None:
@@ -495,6 +497,8 @@ class SPECTRAModule(pl.LightningModule):
         else:
             # ─── Standard optimization path ───────────────────
             shared_params = list(self.backbone.parameters())
+            if self.use_alb:
+                shared_params += list(self.alb.parameters())
             total_loss, w_metrics = self.weighter(
                 losses_tensor,
                 shared_params=shared_params,
@@ -532,6 +536,8 @@ class SPECTRAModule(pl.LightningModule):
         # Periodic health check: Log backbone weight norm to detect dying weights
         if batch_idx % 100 == 0:
             shared_params = list(self.backbone.parameters())
+            if self.use_alb:
+                shared_params += list(self.alb.parameters())
             wn = torch.norm(torch.stack([p.detach().norm(2) for p in shared_params]), 2)
             # Log as WN for the SOTA researcher
             self.log("health/backbone_weight_norm", wn, on_step=True, on_epoch=False, batch_size=batch.get("input").shape[0])

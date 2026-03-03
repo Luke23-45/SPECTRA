@@ -1,12 +1,19 @@
+# @package _global_
 # configs/dataset/clinical.yaml
 # Axe v3.2: Standardized Clinical Benchmark Configuration
 
-name: clinical
+dataset_name: clinical
 dataset_dir: "datasets/sepsis_clinical_28"
 hf_repo: "hellxhell/sepsis-clinical-28"
 sepsis_boost: 5.0
 sampler_target: outcome
 subset_pct: 1.0  # CPM: Subsetting for fast piloting (1.0 = Full Benchmark)
+
+# ─── Target Injection (Clinical Silo + Standard Engine) ────────
+module:
+  _target_: spectra.modules.clinical.ClinicalSPECTRAModule
+  engine:
+    _target_: spectra.engine.optimizers.StandardEngine
 
 # ─── Model Overrides (Expert Clinical Spec) ───────────────────
 model:

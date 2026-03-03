@@ -109,7 +109,7 @@ class GradientHealthCallback(pl.Callback):
     when gradients are populated and can be read without side effects.
     """
 
-    def __init__(self, check_interval: int = 200, spike_threshold: float = 5.0):
+    def __init__(self, check_interval: int = 50, spike_threshold: float = 5.0):
         """
         Args:
             check_interval: Log every N optimizer steps.
@@ -120,14 +120,7 @@ class GradientHealthCallback(pl.Callback):
         self.spike_threshold = spike_threshold
         self._grad_norm_ema: float = -1.0  # Uninitialized
 
-    def on_before_optimizer_step(
-        self, trainer: pl.Trainer, pl_module: pl.LightningModule, optimizer: Any
-    ):
-        # PCGrad uses manual optimization — gradients are already applied
-        # by the time this hook fires. Skip to avoid double-logging.
-        if not getattr(pl_module, "automatic_optimization", True):
-            return
-
+    def _track_grad_health(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
         if trainer.global_step % self.check_interval != 0:
             return
 
@@ -150,13 +143,14 @@ class GradientHealthCallback(pl.Callback):
             return
 
         total_grad_norm = sum(squared_norms) ** 0.5
-        pl_module.log("health/backbone_grad_norm", total_grad_norm, sync_dist=False)
+        # Set prog_bar=True for high-visibility telemetry
+        pl_module.log("health/backbone_grad_norm", total_grad_norm, sync_dist=False, prog_bar=True)
 
         # ── 2. Mean update-to-weight ratio ──────────────────────────
         if param_norms:
             ratios = [gn / pn for gn, pn in param_norms]
             mean_ratio = sum(ratios) / len(ratios)
-            pl_module.log("health/update_weight_ratio", mean_ratio, sync_dist=False)
+            pl_module.log("health/update_weight_ratio", mean_ratio, sync_dist=False, prog_bar=True)
 
             # Flag to W&B for easy monitoring
             if mean_ratio < 1e-4:
@@ -185,6 +179,20 @@ class GradientHealthCallback(pl.Callback):
                 f"Watch for NaN in next 10 steps."
             )
             pl_module.log("health/grad_spike_ratio", spike_ratio, sync_dist=False)
+
+    def on_before_optimizer_step(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule, optimizer: Any
+    ):
+        # Only use this hook for AUTOMATIC optimization
+        if getattr(pl_module, "automatic_optimization", True):
+            self._track_grad_health(trainer, pl_module)
+
+    def on_train_batch_end(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule, outputs: Any, batch: Any, batch_idx: int
+    ):
+        # Only use this hook for MANUAL optimization (PCGrad)
+        if not getattr(pl_module, "automatic_optimization", True):
+            self._track_grad_health(trainer, pl_module)
 
         # ── 4. Weighter-specific health (B-PGS theta saturation) ────
         weighter = getattr(pl_module, "weighter", None)

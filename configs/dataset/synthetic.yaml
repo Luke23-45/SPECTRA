@@ -1,0 +1,73 @@
+# @package _global_
+# configs/dataset/synthetic.yaml
+dataset_name: synthetic
+
+# ─── Target Injection (Synthetic Silo + Standard Engine) ────────
+module:
+  _target_: spectra.modules.synthetic.SyntheticSPECTRAModule
+  engine:
+    _target_: spectra.engine.optimizers.StandardEngine
+
+# ─── Model Architecture ──────────────────────────────────────
+model:
+  backbone: shared_trunk
+  input_dim: 20
+  d_model: 128
+  hidden_layers: 3
+  n_heads: 8
+  dropout: 0.1
+
+# ─── Tasks ───────────────────────────────────────────────────
+tasks:
+  - name: mse_high
+    type: regression
+    loss: mse
+    manifold: planner
+
+  - name: mse_med
+    type: regression
+    loss: mse
+    manifold: planner
+
+  - name: mse_low
+    type: regression
+    loss: mse
+    manifold: planner
+
+  - name: bce_0
+    type: classification
+    loss: bce
+    manifold: expert
+
+  - name: bce_1
+    type: classification
+    loss: bce
+    manifold: expert
+
+  - name: bce_2
+    type: classification
+    loss: bce
+    manifold: expert
+
+  - name: mse_aux
+    type: regression
+    loss: mse
+    manifold: planner
+
+# ─── Training Hyperparameters ────────────────────────────────
+train:
+  epochs: 500
+  batch_size: 256
+  lr: 0.001
+  min_lr: 0.00001
+  warmup_steps: 200
+  weight_decay: 0.0001
+  grad_clip: 2.0
+  precision: 32
+  num_workers: 2
+  log_every_n_steps: 50
+
+# ─── Data ────────────────────────────────────────────────────
+data:
+  n_train: 10000
+  n_val: 2000

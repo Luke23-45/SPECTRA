@@ -6,6 +6,12 @@ root: "datasets/nyuv2_lmdb"      # Root directory for high-fidelity LMDBs
 augmentation: true            # RandomScaleCrop + RandomHorizontalFlip (train only)
 normalize_rgb: false          # ImageNet normalization (enable for pretrained backbones)
 
+# ─── Target Injection (Vision Silo + Standard Engine) ──────────
+module:
+  _target_: spectra.modules.VisionSPECTRAModule
+  engine:
+    _target_: spectra.engine.optimizers.StandardEngine
+
 # Axe v3.2 Fast-Iteration Mode
 subset_pct: 1.0               # [0.0, 1.0] for rapid auditing (0.1 = 10% data)
 subset_seed: 42

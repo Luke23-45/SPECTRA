@@ -34,7 +34,8 @@ class SPECTRADataModule(pl.LightningDataModule):
     def __init__(self, cfg: DictConfig):
         super().__init__()
         self.cfg = cfg
-        self.dataset_name = cfg.dataset.get("name", "synthetic")
+        # Robustly identify dataset name from either global or nested config
+        self.dataset_name = cfg.get("dataset_name") or cfg.get("dataset", {}).get("name", "synthetic")
         
         # Placeholders
         self.train_ds = None
@@ -45,10 +46,15 @@ class SPECTRADataModule(pl.LightningDataModule):
         """Tiered Acquisition logic (Rank 0 only)."""
         if self.dataset_name == "clinical":
             from spectra.data.clinical.dataset import ensure_data_ready
+            # Robust extraction of clinical parameters
+            dataset_dir = self.cfg.get("dataset_dir") or self.cfg.get("dataset", {}).get("dataset_dir", "data/ready")
+            hf_repo = self.cfg.get("hf_repo") or self.cfg.get("dataset", {}).get("hf_repo", None)
+            force_download = self.cfg.get("force_download") or self.cfg.get("dataset", {}).get("force_download", False)
+            
             ensure_data_ready(
-                dataset_dir=self.cfg.dataset.get("dataset_dir", "data/ready"),
-                hf_repo_id=self.cfg.dataset.get("hf_repo", None),
-                force_download=self.cfg.dataset.get("force_download", False)
+                dataset_dir=dataset_dir,
+                hf_repo_id=hf_repo,
+                force_download=force_download
             )
         elif self.dataset_name == "nyuv2":
             # NYUv2 usually assumes local extraction from MTAN binaries
@@ -71,21 +77,24 @@ class SPECTRADataModule(pl.LightningDataModule):
             )
             
         elif self.dataset_name == "nyuv2":
+            root = self.cfg.get("root") or self.cfg.get("dataset", {}).get("root")
+            subset_pct = self.cfg.get("subset_pct") or self.cfg.get("dataset", {}).get("subset_pct", 1.0)
+            
             self.train_ds = NYUv2Dataset(
-                root=self.cfg.dataset.root,
+                root=root,
                 split="train",
                 augmentation=True,
-                subset_pct=self.cfg.dataset.get("subset_pct", 1.0)
+                subset_pct=subset_pct
             )
             self.val_ds = NYUv2Dataset(
-                root=self.cfg.dataset.root,
+                root=root,
                 split="val",
                 augmentation=False
             )
 
         elif self.dataset_name == "clinical":
-            dataset_dir = self.cfg.dataset.get("dataset_dir", "data/ready")
-            subset_pct = self.cfg.dataset.get("subset_pct", 1.0)
+            dataset_dir = self.cfg.get("dataset_dir") or self.cfg.get("dataset", {}).get("dataset_dir", "data/ready")
+            subset_pct = self.cfg.get("subset_pct") or self.cfg.get("dataset", {}).get("subset_pct", 1.0)
             
             self.train_ds = ICUSotaDataset(
                 dataset_dir=dataset_dir,
@@ -111,11 +120,14 @@ class SPECTRADataModule(pl.LightningDataModule):
         
         # Clinical requires specialized weighted sampler for sepsis oversampling
         if self.dataset_name == "clinical":
+            sepsis_boost = self.cfg.get("sepsis_boost") or self.cfg.get("dataset", {}).get("sepsis_boost", 5.0)
+            sampler_target = self.cfg.get("sampler_target") or self.cfg.get("dataset", {}).get("sampler_target", "outcome")
+            
             sampler = create_sepsis_aware_sampler(
                 dataset=self.train_ds,
-                sepsis_boost_factor=self.cfg.dataset.get("sepsis_boost", 5.0),
+                sepsis_boost_factor=sepsis_boost,
                 seed=self.cfg.seed,
-                target=self.cfg.dataset.get("sampler_target", "outcome"),
+                target=sampler_target,
             )
             # Sampler is inherently Distributed-aware (Axe v3.2 StatefulSampler)
             return DataLoader(

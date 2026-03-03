@@ -1,3 +1,9 @@
+# @package _global_
 # ─── PCGrad (Yu et al. 2020) ─────────────────────────────────
-name: pcgrad
+method_name: pcgrad
 use_alb: false
+
+# Overrides the `engine` block of whatever Domain Silo is currently active
+module:
+  engine:
+    _target_: spectra.engine.optimizers.PCGradEngine

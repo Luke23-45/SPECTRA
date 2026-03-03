@@ -7,10 +7,11 @@ import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 from omegaconf import OmegaConf
 
+from tqdm import tqdm
 from spectra.engine.trainer import SPECTRAModule
 from spectra.data.clinical.dataset import ICUTrajectoryDataset
 
-def main():
+def test_clinical_pcgrad():
     print("--- Testing SPECTRAModule with PCGrad on REAL Clinical Sepsis Data ---")
     
     # 1. Create Config matching clinical.yaml
@@ -58,13 +59,29 @@ def main():
     model = SPECTRAModule(cfg)
     
     # 4. Custom Callback for Terminal Logging
-    class PrintMetricsCallback(pl.Callback):
-        def on_train_epoch_end(self, trainer, pl_module):
+    class TQDMProgressBar(pl.Callback):
+        def __init__(self):
+            super().__init__()
+            self.pbar = None
+
+        def on_train_epoch_start(self, trainer, pl_module):
+            self.pbar = tqdm(total=len(trainer.train_dataloader), desc=f"Epoch {trainer.current_epoch}")
+
+        def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
             train_loss = trainer.callback_metrics.get("train/total_loss")
             gn = trainer.callback_metrics.get("health/backbone_grad_norm")
-            conflicts = trainer.callback_metrics.get("pcgrad/total_conflicts")
-            if train_loss is not None:
-                print(f"[Epoch {trainer.current_epoch} Train] Loss: {train_loss:.4f} | GN: {gn:.4f} | Conflicts: {conflicts:.1f}")
+            conf = trainer.callback_metrics.get("pcgrad/total_conflicts")
+            
+            postfix = {}
+            if train_loss is not None: postfix["loss"] = f"{train_loss:.4f}"
+            if gn is not None: postfix["gn"] = f"{gn:.4f}"
+            if conf is not None: postfix["conf"] = f"{conf:.1f}"
+            
+            self.pbar.set_postfix(postfix)
+            self.pbar.update(1)
+
+        def on_train_epoch_end(self, trainer, pl_module):
+            self.pbar.close()
             
         def on_validation_epoch_end(self, trainer, pl_module):
             val_loss = trainer.callback_metrics.get("val/total_loss")
@@ -73,7 +90,7 @@ def main():
             if val_loss is not None:
                 auc_str = f"{auc:.4f}" if auc is not None else "N/A"
                 out_loss_str = f"{out_loss:.4f}" if out_loss is not None else "N/A"
-                print(f"[Epoch {trainer.current_epoch} Val] Total Loss: {val_loss:.4f} | Outcome Val Loss: {out_loss_str} | Outcome AUC: {auc_str}")
+                print(f"\n[Epoch {trainer.current_epoch} Val] Total Loss: {val_loss:.4f} | Outcome Val Loss: {out_loss_str} | Outcome AUC: {auc_str}")
 
     # 5. Train
     trainer = pl.Trainer(
@@ -81,14 +98,14 @@ def main():
         accelerator="cpu",
         devices=1,
         enable_checkpointing=False,
+        enable_progress_bar=False,  # Disable PL default
         logger=False,
         log_every_n_steps=5,
-        callbacks=[PrintMetricsCallback()]
+        callbacks=[TQDMProgressBar()]
     )
     
     print(f"Starting training on {len(train_ds)} samples...")
     trainer.fit(model, train_loader, val_loader)
     print("Training completed successfully!")
 
-if __name__ == "__main__":
-    main()
+    print("Training completed successfully!")
