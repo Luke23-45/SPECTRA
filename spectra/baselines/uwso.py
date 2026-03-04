@@ -52,31 +52,37 @@ class UWSOWeighter(BaseWeighter):
         losses: torch.Tensor,
         shared_params: Optional[List[nn.Parameter]] = None,
         sync_ddp: bool = True,
+        raw_losses: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         # DDP sync (optional)
         losses_for_ema = losses.detach()
+        if raw_losses is not None:
+            losses_for_ema = raw_losses.detach()
+
         if sync_ddp and dist.is_initialized():
             losses_sync = losses_for_ema.clone()
             dist.all_reduce(losses_sync, op=dist.ReduceOp.SUM)
             losses_for_ema = losses_sync / dist.get_world_size()
 
-        # Update EMA
-        with torch.no_grad():
-            if self.step_count == 0:
-                self.loss_ema.copy_(losses_for_ema)
-            else:
-                self.loss_ema.lerp_(losses_for_ema, 1.0 - self._ema_decay)
-            self.step_count.add_(1)
+        # Update EMA (Training Only Guard)
+        if self.training:
+            with torch.no_grad():
+                if self.step_count == 0:
+                    self.loss_ema.copy_(losses_for_ema)
+                else:
+                    self.loss_ema.lerp_(losses_for_ema, 1.0 - self._ema_decay)
+                self.step_count.add_(1)
 
         # [SOTA EXACT from Kirchdorfer et al. IJCV 2026 / arXiv:2408.07985]
-        # Analytical optimal + tempered softmax. NO regularizer → never negative.
-        losses = losses.clamp(min=0)  # [ry.md point 4] robust prevention for <0 task losses
-        losses_safe = losses.detach().clamp(min=1e-8)  # prevent div0 / inf
-        inv_losses = 1.0 / losses_safe
+        # Weights are derived from trackable uncertainty (raw_losses) if available,
+        # ensuring the weighter correctly handles scale gaps in the task landscape.
+        weight_input = raw_losses if raw_losses is not None else losses
+        
+        weight_input = weight_input.detach().clamp(min=1e-8)
+        inv_losses = 1.0 / weight_input
         weights = torch.softmax(inv_losses / self.temperature, dim=0)  # sum(weights)=1
         
-        # Total loss: convex combination of task losses.
-        # This mathematically guarantees total_loss >= min(losses) >= 0.
+        # Total loss: convex combination of the provided (potentially weighted) losses.
         total = (weights * losses).sum()
 
         metrics = {}

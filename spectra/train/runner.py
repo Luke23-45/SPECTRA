@@ -52,7 +52,7 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     # B-PGS requires a specialized decoupled engine. Due to Hydra v1.1+ namespace
     # merging limitations, we inject it directly at the execution rim.
     method_name = cfg.get("method_name") or cfg.get("method", {}).get("name")
-    if method_name == "bpgs":
+    if method_name in ("bpgs", "bpgs_alb"):
         from spectra.engine.optimizers.bpgs import BPGSEngine
         engine = BPGSEngine()
     else:
@@ -113,7 +113,11 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     gradient_clip_val = cfg.train.get("grad_clip", 1.0)
     if not getattr(model, "automatic_optimization", True):
         gradient_clip_val = None # Managed by manual engine
-        logger.info("[Mission-Control] PCGrad detected (manual optimization). Automatic PL clipping disabled.")
+        method_name_local = cfg.get("method_name") or cfg.get("method", {}).get("name", "unknown")
+        logger.info(
+            f"[Mission-Control] Manual optimization active (method={method_name_local}). "
+            f"Automatic PL gradient clipping disabled — engine manages clipping internally."
+        )
 
     trainer = pl.Trainer(
         max_epochs=cfg.train.epochs,

@@ -87,9 +87,9 @@ class TestBPGSEMA:
         l_bar = scaler.get_L_bar()
         assert all(v == 1.0 for v in l_bar)
 
-    def test_ema_convergence_relative(self):
-        """[SOTA Update] EMA now tracks relative loss (normalized by global scale).
-        A constant loss signal should result in a relative L_bar of 1.0.
+    def test_ema_convergence_absolute(self):
+        """EMA tracks absolute loss (not normalized by global scale).
+        A constant loss signal should result in a matching relative L_bar.
         """
         tau = 10.0
         scaler = BPGS(num_tasks=1, tau=tau)
@@ -100,10 +100,8 @@ class TestBPGSEMA:
             scaler.update_ema([torch.tensor(target)])
             
         final_l_bar = scaler.get_L_bar()[0]
-        # In the new implementation, L_bar = loss / global_ema.
-        # If loss is constant, L_bar converges to 1.0.
-        assert abs(final_l_bar - 1.0) < 1e-3
-        assert abs(scaler.total_loss_ema.item() - target) < 1e-3
+        # In the proper formulation, L_bar converges to target.
+        assert abs(final_l_bar - target) < 1e-3
 
 
 class TestBPGSShadowVariable:
@@ -163,7 +161,7 @@ class TestBPGSIntegration:
     """Test 5: Integration with network losses."""
 
     def test_network_loss_weight_projection(self):
-        """[SOTA Update] Network weights must sum to num_tasks (Sum-to-N)."""
+        """Network weights must match exact exp(-s_i) values, no cross-task normalization."""
         num_tasks = 4
         scaler = BPGS(num_tasks=num_tasks)
         # Force unbalanced theta
@@ -179,12 +177,12 @@ class TestBPGSIntegration:
         
         # Extract grads from the leaf tensors
         grads = torch.tensor([l.grad.item() for l in losses])
+        expected_weights = torch.exp(-torch.tensor(scaler.get_s()))
         # Since network_loss = \sum 0.5 * w_i * L_i, dL/dL_i = 0.5 * w_i
-        # Thus \sum w_i = (\sum dL/dL_i) / 0.5
-        sum_weights = grads.sum().item() / 0.5
         
-        # Sum of weights must be EXACTLY num_tasks
-        assert abs(sum_weights - num_tasks) < 1e-5
+        # Individual weights must match precisely
+        for i in range(num_tasks):
+            assert abs(grads[i] - 0.5 * expected_weights[i]) < 1e-5
 
     def test_nan_gate_resilience(self):
         """EMA should ignore NaN/Inf signals via NaN Gate."""

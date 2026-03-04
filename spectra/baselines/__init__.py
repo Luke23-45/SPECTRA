@@ -29,9 +29,10 @@ def build_weighter(cfg):
         # Tau fallback and ema_decay conversion
         tau = m_cfg.get("tau", 50.0)
         if "ema_decay" in m_cfg and "tau" not in m_cfg:
-            # alpha = 1 - decay; tau = 1/alpha
-            decay = m_cfg.get("ema_decay")
-            tau = 1.0 / (1.0 - decay) if decay < 1.0 else 100.0
+            import math
+            decay = float(m_cfg.get("ema_decay"))
+            decay_safe = max(1e-6, min(1.0 - 1e-6, decay))
+            tau = -1.0 / math.log(1.0 - decay_safe)
             
         return BPGS(
             num_tasks=len(cfg.tasks),

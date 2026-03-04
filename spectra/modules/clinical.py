@@ -109,6 +109,7 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
                 self.train_metrics[f"{name}_acc"].update(p_metric, t_metric)
 
         losses_tensor = torch.stack(weighted_task_loss_list)
+        raw_losses_tensor = torch.stack([loss_dict[n] for n in self.task_names])
         
         # [SOTA Fix] Route standard methods through the Weighter.
         # PCGrad ignores this total_loss because PCGradEngine does manual surgery.
@@ -122,6 +123,7 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
                 losses_tensor,
                 shared_params=shared_params,
                 sync_ddp=self.trainer.world_size > 1 if getattr(self, "trainer", None) else False,
+                raw_losses=raw_losses_tensor,
             )
             bsz = batch.get("input").shape[0] if isinstance(batch.get("input"), torch.Tensor) else 1
             for key, val in w_metrics.items():
@@ -184,6 +186,17 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
                 self._val_metrics[f"{name}_acc"].update(pred, target)
 
         losses_tensor = torch.stack(weighted_task_loss_list)
+        # Re-extracting unweighted losses for validation
+        unweighted_losses = []
+        for name in self.task_names:
+            pred = predictions[name]
+            target = targets[name]
+            if pred.dim() <= 2 and target.dim() <= 2:
+                if pred.dim() > target.dim(): pred = pred.squeeze(-1)
+                if target.dim() > pred.dim(): target = target.squeeze(-1)
+            unweighted_losses.append(self.task_losses[name](pred, target))
+        raw_losses_tensor = torch.stack(unweighted_losses)
+
         if self.is_pcgrad:
             total_val_loss = losses_tensor.sum()
         else:
@@ -194,6 +207,7 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
                 losses_tensor,
                 shared_params=shared_params,
                 sync_ddp=self.trainer.world_size > 1 if getattr(self, "trainer", None) else False,
+                raw_losses=raw_losses_tensor,
             )
 
         self.log("val/total_loss", total_val_loss, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)

@@ -35,6 +35,7 @@ class BaseWeighter(nn.Module, ABC):
         losses: torch.Tensor,
         shared_params: Optional[List[nn.Parameter]] = None,
         sync_ddp: bool = True,
+        raw_losses: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Compute weighted multi-task loss.
@@ -44,6 +45,7 @@ class BaseWeighter(nn.Module, ABC):
             shared_params: Optional list of shared backbone parameters.
                            Required for gradient-based methods (PCGrad).
             sync_ddp: Whether to synchronize across DDP ranks.
+            raw_losses: Optional per-task unweighted losses for spectral estimation.
 
         Returns:
             total_loss: Scalar loss for backpropagation.

@@ -315,10 +315,6 @@ class BPGS(nn.Module):
             "L_bar",
             torch.ones(self.num_tasks, dtype=torch.float32),
         )
-        self.register_buffer(
-            "total_loss_ema",
-            torch.tensor(1.0, dtype=torch.float32),
-        )
 
     # ====================================================================== #
     # Core: diffeomorphic uncertainty chart                                   #
@@ -416,11 +412,8 @@ class BPGS(nn.Module):
                 # Extract scalar value as a plain Python float.
                 loss_val_raw: float = loss_det.item()
                 
-                # [SOTA Fix] Global Loss Scale Tracking
-                # We normalize the incoming loss by the global EMA to ensure L_bar 
-                # tracks relative task difficulty rather than absolute (often unscaled) magnitude.
-                global_ema: float = self.total_loss_ema.item()
-                loss_val: float = loss_val_raw / (global_ema + 1e-8)
+                # Use raw loss (do not normalize by global sum, to preserve task difficulty signal)
+                loss_val: float = loss_val_raw
                 
                 old_val:  float = self.L_bar[i].item()
 
@@ -429,11 +422,6 @@ class BPGS(nn.Module):
 
                 # Write back into the buffer using __setitem__.
                 self.L_bar[i] = new_val
-            
-            # Update global scale EMA (sum of current raw losses)
-            current_sum = sum([l.item() for l in losses if torch.isfinite(l).item()])
-            new_global = self.total_loss_ema.item() + self.beta * (current_sum - self.total_loss_ema.item())
-            self.total_loss_ema.fill_(max(1e-8, new_global))
 
     # ====================================================================== #
     # Base Flow: network loss                                                  #
@@ -470,13 +458,6 @@ class BPGS(nn.Module):
 
         s_values = self.get_s()
         
-        # [SOTA Fix] Weight Projection (Sum-to-N)
-        # Prevents gradient explosion by ensuring the sum of precision weights
-        # preserves the total gradient energy of a standard 1.0-weighted sum.
-        raw_weights = torch.stack([torch.exp(-s_i) for s_i in s_values])
-        weights_norm = (raw_weights / (raw_weights.sum() + 1e-8)) * self.num_tasks
-        weights_norm = weights_norm.detach() # Mandatory stop-gradient for Base Flow
-
         terms = []
         for i, loss_i in enumerate(raw_losses):
             if not isinstance(loss_i, torch.Tensor):
@@ -484,7 +465,10 @@ class BPGS(nn.Module):
                     f"raw_losses[{i}] must be a torch.Tensor; "
                     f"got {type(loss_i).__name__!r}."
                 )
-            terms.append(0.5 * weights_norm[i] * loss_i)
+            # Use raw unscaled exp(-s_i) to maintain theoretical fixed-point consistency
+            # with the uncertainty flow. Stop-gradient (.detach()) is mandatory.
+            weight_i = torch.exp(-s_values[i]).detach()
+            terms.append(0.5 * weight_i * loss_i)
 
         return sum(terms)
 

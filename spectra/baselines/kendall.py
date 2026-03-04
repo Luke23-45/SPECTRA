@@ -44,6 +44,7 @@ class KendallWeighter(BaseWeighter):
         losses: torch.Tensor,
         shared_params: Optional[List[nn.Parameter]] = None,
         sync_ddp: bool = True,
+        raw_losses: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         # Cast to fp32 for numerical safety under AMP (exp(11.1) overflows fp16)
         log_vars_fp32 = self.log_vars.float()

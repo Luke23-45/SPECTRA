@@ -52,12 +52,13 @@ class BPGSEngine(OptimizationEngine):
         grad_clip = getattr(module.cfg.train, 'grad_clip', 0.0)
 
         # ── 1. Update EMA tracker (no grad required) ─────────────────────────
-        weighted_task_loss_list = list(losses.values())
-        module.weighter.update_ema(weighted_task_loss_list)
+        # Ensure robust coordinate-task alignment by gathering explicitly by name
+        unweighted_losses = [losses[name] for name in module.task_names]
+        module.weighter.update_ema(unweighted_losses)
 
         # ── 2. Base Flow — Network weights ───────────────────────────────────
         raw_opt_net.zero_grad()
-        loss_net = module.weighter.network_loss(weighted_task_loss_list)
+        loss_net = module.weighter.network_loss(unweighted_losses)
 
         if scaler is not None:
             # Canonical PyTorch AMP: scale → backward → unscale → clip → step.
@@ -118,4 +119,4 @@ class BPGSEngine(OptimizationEngine):
         for key, val in module.weighter.get_task_stats().items():
             module.log(f'train/{key}', val, on_step=False, on_epoch=True, sync_dist=True)
 
-        return total_loss.detach()
+        return loss_net.detach()

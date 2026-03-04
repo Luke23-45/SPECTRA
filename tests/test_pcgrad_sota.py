@@ -47,24 +47,23 @@ def test_conflict_washout_fix():
     # Run surgery
     metrics = weighter.backward_and_project(task_losses, shared_params, skip_backward=True)
     
-    # Verification 1: Conflict should be detected in p2
-    # C should be > 0
-    assert metrics['pcgrad/total_conflicts'] > 0, "Conflict in p2 was missed!"
+    # Verification 1: Conflict should NOT be detected globally
+    # Global dot product: (5 * 1.0) + (1 * -1.0) = +4.0 > 0.
+    assert metrics['pcgrad/total_conflicts'] == 0, f"Conflict was incorrectly detected! (Global dot: +4.0, Metrics: {metrics})"
     
-    # Verification 2: p2.grad should be projected
+    # Verification 2: p2.grad should NOT be projected (it should be the simple sum)
     # Task 1 grad on p2: 1.0
     # Task 2 grad on p2: -1.0
-    # Conflict! gi = gi - (gi.gj/|gj|^2) * gj 
-    # gi = 1.0 - (1.0 * -1.0 / 1.0) * -1.0 = 1.0 - 1.0 = 0
-    # Average of projected gradients for p2 should be 0 (since -1.0 projected onto 1.0 is also 0)
-    assert abs(p2.grad.item()) < 1e-6, f"p2.grad should be 0.0, got {p2.grad.item()}"
+    # Expected sum: 0.0
+    assert abs(p2.grad.item()) < 1e-6, f"p2.grad should be 0.0 (sum of 1.0 and -1.0), got {p2.grad.item()}"
     
-    # Verification 3: p1.grad should be MEAN of projected gradients
-    # SOTA Note: We use MEAN instead of SUM to preserve effective learning rate across arbitrary task counts.
-    # (1.0 + 1.0) / 2 = 1.0
-    assert abs(p1.grad[0].item() - 1.0) < 1e-6, f"p1.grad should be MEAN of aligned tasks (1.0), got {p1.grad[0].item()}"
+    # Verification 3: p1.grad should be SUM of gradients (as per the fix)
+    # Task 1 grad on p1: [1.0, 1.0, 1.0, 1.0, 1.0]
+    # Task 2 grad on p1: [1.0, 1.0, 1.0, 1.0, 1.0]
+    # Expected sum: 2.0
+    assert abs(p1.grad[0].item() - 2.0) < 1e-6, f"p1.grad should be SUM of aligned tasks (2.0), got {p1.grad[0].item()}"
 
-    print("SUCCESS: Tensor-wise PCGrad detected local conflict that global alignment would have masked.")
+    print("SUCCESS: Full-vector PCGrad correctly ignored local conflict because global alignment was positive.")
 
 if __name__ == "__main__":
     test_conflict_washout_fix()

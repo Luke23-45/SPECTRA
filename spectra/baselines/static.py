@@ -39,6 +39,7 @@ class StaticWeighter(BaseWeighter):
         losses: torch.Tensor,
         shared_params: Optional[List[nn.Parameter]] = None,
         sync_ddp: bool = True,
+        raw_losses: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         total = (self.weights * losses).sum()
         metrics = {f"static/weight_{i}": self.weights[i].item() for i in range(self.num_tasks)}

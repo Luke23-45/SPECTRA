@@ -64,20 +64,25 @@ class NTKMTLWeighter(BaseWeighter):
         losses: torch.Tensor,
         shared_params: Optional[List[nn.Parameter]] = None,
         sync_ddp: bool = True,
+        raw_losses: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         # DDP Loss Sync for EMA (same as UW-SO and B-PGS)
         losses_for_ema = losses.detach()
+        if raw_losses is not None:
+            losses_for_ema = raw_losses.detach()
+            
         if sync_ddp and dist.is_initialized():
             losses_sync = losses_for_ema.clone()
             dist.all_reduce(losses_sync, op=dist.ReduceOp.SUM)
             losses_for_ema = losses_sync / dist.get_world_size()
 
-        # Update loss EMA
-        with torch.no_grad():
-            if self.step_count == 0:
-                self.loss_ema.copy_(losses_for_ema)
-            else:
-                self.loss_ema.lerp_(losses_for_ema, 1.0 - self._ema_decay)
+        # Update loss EMA (Training Only Guard)
+        if self.training:
+            with torch.no_grad():
+                if self.step_count == 0:
+                    self.loss_ema.copy_(losses_for_ema)
+                else:
+                    self.loss_ema.lerp_(losses_for_ema, 1.0 - self._ema_decay)
 
         # Periodic NTK weight update
         if (
@@ -88,10 +93,12 @@ class NTKMTLWeighter(BaseWeighter):
         ):
             # losses must have grad_fn for autograd.grad to work
             if losses.grad_fn is not None:
-                self._update_ntk_weights(losses, shared_params, sync_ddp)
+                ntk_input = raw_losses if raw_losses is not None else losses
+                self._update_ntk_weights(ntk_input, shared_params, sync_ddp)
 
-        with torch.no_grad():
-            self.step_count.add_(1)
+        if self.training:
+            with torch.no_grad():
+                self.step_count.add_(1)
 
         total = (self.weights.detach() * losses).sum()
 
@@ -141,8 +148,8 @@ class NTKMTLWeighter(BaseWeighter):
             )
             norms.append(total_norm)
 
-        # Convert to tensor asynchronously
-        norms_t = torch.stack(norms).to(losses.dtype)
+        # Convert to tensor in FP32 for numerical stability
+        norms_t = torch.stack(norms).to(torch.float32)
 
         # CRITICAL FIX: DDP Sync for Gradient Norms
         # Without this, each rank computes spectral_energy based on its local minibatch,
@@ -158,7 +165,7 @@ class NTKMTLWeighter(BaseWeighter):
             # Otherwise, its inverse weight explodes and zeroes out all other tasks.
             valid_mask = (norms_t > 1e-8).float()
             
-            # Apply EMA only where gradients exist
+            # Apply EMA only where gradients exist (SOTA Logic)
             updated_energy = torch.lerp(self.spectral_energy, norms_t, 1.0 - self._ema_decay)
             self.spectral_energy.copy_(torch.where(valid_mask > 0.5, updated_energy, self.spectral_energy))
 
@@ -169,7 +176,8 @@ class NTKMTLWeighter(BaseWeighter):
             # Normalize to sum to num_tasks (preserves scale)
             self.weights.copy_(inv_weights * self.num_tasks / inv_weights.sum())
 
-        logger.debug(
-            f"[NTKMTL] Updated weights: {self.weights.tolist()} "
-            f"spectral: {self.spectral_energy.tolist()}"
-        )
+        if self.step_count < self._update_interval * 10:
+            logger.info(
+                f"[NTKMTL] Updated weights: {self.weights.tolist()} "
+                f"spectral: {self.spectral_energy.tolist()}"
+            )

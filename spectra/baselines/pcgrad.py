@@ -52,6 +52,7 @@ class PCGradWeighter(BaseWeighter):
         losses: torch.Tensor,
         shared_params: Optional[List[nn.Parameter]] = None,
         sync_ddp: bool = True,
+        raw_losses: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """Returns unweighted sum. Actual gradient surgery happens in backward_and_project()."""
         total = losses.sum()
@@ -71,90 +72,85 @@ class PCGradWeighter(BaseWeighter):
         """
         Custom backward with gradient projection (replaces total_loss.backward()).
         
-        SOTA Implementation (NASA/Google Style):
-        - Tensor-wise projection to prevent 'Conflict Washout'.
+        Refined Implementation (Full-Vector Projection):
+        - Follows Yu et al. (2020) by projecting on the full gradient vector.
         - Stochastic projection order to prevent task bias.
         - Summation (not averaging) to preserve effective LR.
-        - Zero-copy parameter-wise processing for memory efficiency.
         """
         num_tasks = len(task_losses)
+        device = task_losses[0].device
         
         # 1. Compute per-task gradients for shared parameters
-        # We store these as a list of lists (task -> list of param grads)
-        # to avoid the overhead of large concatenations.
         task_grads = []
         for idx, loss in enumerate(task_losses):
             is_last = (idx == num_tasks - 1)
-            # Efficient autograd: retain_graph=True for all but the last backprop
             grads = torch.autograd.grad(
                 loss, shared_params,
                 retain_graph=not is_last,
                 allow_unused=True,
             )
-            # Ensure no None grads from unused params
             grads = [
-                g if g is not None else torch.zeros_like(p)
+                g.detach() if g is not None else torch.zeros_like(p)
                 for g, p in zip(grads, shared_params)
             ]
             task_grads.append(grads)
 
-        # 2. Gradient Surgery (Tensor-wise)
-        # Instead of flattening millions of params, we loop through parameters.
-        # This keeps the working set small and avoids memory fragmentation.
-        conflict_counts = torch.zeros(num_tasks, device=task_losses[0].device)
+        # 2. Flatten and Project
+        conflict_counts = torch.zeros(num_tasks, device=device)
         
         with torch.no_grad():
-            for p_idx, param in enumerate(shared_params):
-                # Grads for this specific parameter across all tasks
-                param_task_grads = [tg[p_idx] for tg in task_grads]
-                
-                projected_grads = []
-                for i in range(num_tasks):
-                    gi = param_task_grads[i].clone()
-                    
-                    # Randomize conflict check order (SOTA requirement)
-                    indices = list(range(num_tasks))
-                    random.shuffle(indices)
-                    
-                    for j in indices:
-                        if i == j:
-                            continue
-                        gj = param_task_grads[j]
-                        dot = torch.sum(gi * gj)
-                        
-                        if dot < 0:
-                            # Project gi onto the normal plane of gj
-                            # Formula: gi = gi - (gi·gj / ||gj||^2) * gj
-                            norm_sq = torch.sum(gj * gj) + 1e-8
-                            gi -= (dot / norm_sq) * gj
-                            conflict_counts[i] += 1
-                    
-                    projected_grads.append(gi)
-                
-                # 3. Aggregation: Dynamic SUM
-                # Using SUM matches standard multi-task learning gradient accumulation
-                # and prevents scaling mismatch with the heads (which receive sum-level loss grads).
-                final_grad = torch.stack(projected_grads).sum(dim=0)
-                
-                # Dynamic scaling (e.g. for matching original magnitude if needed)
-                if scale != 1.0:
-                    final_grad *= scale
+            # Flatten all per-task gradients to 1D vectors
+            flat_grads = [
+                torch.cat([g.reshape(-1) for g in tg])
+                for tg in task_grads
+            ]
 
-                # 4. Assign to parameter.grad
+            projected_flat = []
+            for i in range(num_tasks):
+                gi = flat_grads[i].clone()
+                
+                indices = list(range(num_tasks))
+                random.shuffle(indices)
+                
+                for j in indices:
+                    if i == j:
+                        continue
+                    gj = flat_grads[j]
+                    dot = torch.dot(gi, gj)
+                    
+                    if dot < 0:
+                        norm_sq = torch.dot(gj, gj) + 1e-8
+                        gi -= (dot / norm_sq) * gj
+                        conflict_counts[i] += 1
+                
+                projected_flat.append(gi)
+            
+            # 3. Aggregation: Dynamic SUM
+            final_flat = torch.stack(projected_flat).sum(dim=0)
+            
+            if scale != 1.0:
+                final_flat *= scale
+
+            # 4. Unflatten and Assign to parameter.grad
+            offset = 0
+            for param in shared_params:
+                numel = param.numel()
+                grad_slice = final_flat[offset: offset + numel].reshape(param.shape)
                 if param.grad is None:
-                    param.grad = final_grad.clone()
+                    param.grad = grad_slice.clone()
                 else:
-                    param.grad.copy_(final_grad)
+                    param.grad.copy_(grad_slice)
+                offset += numel
 
         # 5. Telemetry (Conflict EMA update)
         with torch.no_grad():
             self.conflict_count.lerp_(conflict_counts, 0.1)
 
         metrics = {
-            f"pcgrad/conflict_{i}": conflict_counts[i]
+            f"pcgrad/conflict_{i}": conflict_counts[i].item()
             for i in range(num_tasks)
         }
-        metrics["pcgrad/total_conflicts"] = conflict_counts.sum()
+        metrics["pcgrad/total_conflicts"] = conflict_counts.sum().item()
         return metrics
 
     def project_and_assign(
@@ -165,66 +161,65 @@ class PCGradWeighter(BaseWeighter):
         """
         Perform gradient surgery on PRE-COMPUTED per-task gradients.
 
-        Unlike backward_and_project(), this skips autograd.grad() and operates
-        on already-computed gradient tensors. This enables clean AMP integration:
-        the caller computes gradients via autograd.grad(scaler.scale(loss)),
-        ensuring correct magnitude under mixed precision.
-
-        Args:
-            task_grads: [num_tasks][num_params] list of gradient tensors.
-            shared_params: Shared backbone parameters (for .grad assignment).
-
-        Returns:
-            Metrics dict with conflict telemetry.
+        Refined Implementation (Full-Vector Projection):
+        - Follows Yu et al. (2020) by projecting on the full gradient vector.
+        - Stochastic projection order to prevent task bias.
+        - Summation (not averaging) to preserve effective LR.
         """
         num_tasks = len(task_grads)
         device = shared_params[0].device if shared_params else "cpu"
         conflict_counts = torch.zeros(num_tasks, device=device)
 
         with torch.no_grad():
-            for p_idx, param in enumerate(shared_params):
-                # Grads for this parameter across all tasks
-                param_task_grads = [tg[p_idx] for tg in task_grads]
+            # 1. Flatten all per-task gradients to 1D vectors
+            flat_grads = []
+            for tg in task_grads:
+                flat_grads.append(torch.cat([g.reshape(-1) for g in tg]))
 
-                projected_grads = []
-                for i in range(num_tasks):
-                    gi = param_task_grads[i].clone()
+            projected_flat = []
+            for i in range(num_tasks):
+                gi = flat_grads[i].clone()
 
-                    # Randomize conflict check order (SOTA: prevents task bias)
-                    indices = list(range(num_tasks))
-                    random.shuffle(indices)
+                # Randomize conflict check order (SOTA: prevents task bias)
+                indices = list(range(num_tasks))
+                random.shuffle(indices)
 
-                    for j in indices:
-                        if i == j:
-                            continue
-                        gj = param_task_grads[j]
-                        dot = torch.sum(gi * gj)
+                for j in indices:
+                    if i == j:
+                        continue
+                    gj = flat_grads[j]
+                    dot = torch.dot(gi, gj)
 
-                        if dot < 0:
-                            # Project gi onto normal plane of gj
-                            norm_sq = torch.sum(gj * gj) + 1e-8
-                            gi -= (dot / norm_sq) * gj
-                            conflict_counts[i] += 1
+                    if dot < 0:
+                        # Project gi onto normal plane of gj
+                        norm_sq = torch.dot(gj, gj) + 1e-8
+                        gi -= (dot / norm_sq) * gj
+                        conflict_counts[i] += 1
 
-                    projected_grads.append(gi)
+                projected_flat.append(gi)
 
-                # SUM to match standard multi-task backward() and fix scaling mismatch with heads
-                final_grad = torch.stack(projected_grads).sum(dim=0)
+            # 2. Aggregation: Dynamic SUM
+            final_flat = torch.stack(projected_flat).sum(dim=0)
 
-                # Assign to parameter.grad
+            # 3. Unflatten and assign to parameter.grad
+            offset = 0
+            for param in shared_params:
+                numel = param.numel()
+                grad_slice = final_flat[offset: offset + numel].reshape(param.shape)
                 if param.grad is None:
-                    param.grad = final_grad.clone()
+                    param.grad = grad_slice.clone()
                 else:
-                    param.grad.copy_(final_grad)
+                    param.grad.copy_(grad_slice)
+                offset += numel
 
         # Update running conflict EMA
         with torch.no_grad():
             self.conflict_count.lerp_(conflict_counts, 0.1)
 
         metrics = {
-            f"pcgrad/conflict_{i}": conflict_counts[i]
+            f"pcgrad/conflict_{i}": conflict_counts[i].item()
             for i in range(num_tasks)
         }
-        metrics["pcgrad/total_conflicts"] = conflict_counts.sum()
+        metrics["pcgrad/total_conflicts"] = conflict_counts.sum().item()
         return metrics
 
