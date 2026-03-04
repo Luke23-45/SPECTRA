@@ -4,7 +4,7 @@ defaults:
   - _self_
 
 # ─── Experiment Metadata ──────────────────────────────────────
-run_name: "${method.name}_nyuv2_s${seed}"
+run_name: "${method.name}_${dataset_name}_s${seed}"
 seed: 42
 
 # ─── Model Architecture ──────────────────────────────────────
@@ -13,19 +13,18 @@ model:
   input_channels: 3
   d_model: 64
 
-# ─── Tasks (from dataset config) ──────────────────────────────
-tasks: ${dataset.tasks}
+# ─── Tasks (now globally injected by dataset config) ──────────────
 
 # ─── Training Hyperparameters ────────────────────────────────
 train:
   epochs: 200
   batch_size: 2           # NYUv2 images are large (288×384) — GPU memory constraint
-  lr: 0.0001              # Lower than synthetic (dense prediction converges slower)
+  lr: 0.0005              # Dense prediction converges well at 5e-4
   min_lr: 0.000001
   warmup_steps: 100
   weight_decay: 0.0001
   grad_clip: 2.0
-  precision: 32
+  precision: "16-mixed"
   num_workers: 2
   log_every_n_steps: 10
 

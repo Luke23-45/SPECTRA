@@ -45,7 +45,6 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
         # Clinical Metrics strict to outcome and phase
         self.train_metrics = nn.ModuleDict()
         self._val_metrics = nn.ModuleDict()
-        self._val_losses = nn.ModuleDict()
 
         for task in cfg.tasks:
             name = task.name
@@ -61,10 +60,7 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
             loss_fn = LOSS_REGISTRY[task.loss](**loss_kwargs)
             self.task_losses[name] = loss_fn
 
-            # Val Losses tracker
-            self._val_losses[name] = LOSS_REGISTRY[task.loss](**loss_kwargs)
-
-            # Metrics
+            # Val Losses tracker and Metrics
             if name == "outcome":
                 self.train_metrics[f"{name}_auc"] = AUROC(task="binary")
                 self._val_metrics[f"{name}_auc"] = AUROC(task="binary")
@@ -143,9 +139,12 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
         )
 
         # 4. Standard Logging
-        bsz = batch.get("input").shape[0]
+        bsz = batch.get("input").shape[0] if isinstance(batch.get("input"), torch.Tensor) else 1
         if final_loss is not None:
-             self.log("train/total_loss", final_loss.detach(), prog_bar=True, on_step=True, on_epoch=True, sync_dist=True, batch_size=bsz)
+             # Fast local logging for step, global bucketed logging for epoch
+             self.log("step_loss", final_loss.detach(), prog_bar=True, on_step=True, on_epoch=False, sync_dist=False, batch_size=bsz)
+             self.log("train/total_loss", final_loss.detach(), prog_bar=False, on_step=False, on_epoch=True, sync_dist=True, batch_size=bsz)
+        
         for name, loss in loss_dict.items():
              self.log(f"train/{name}_loss", loss.detach(), on_step=False, on_epoch=True, sync_dist=True, batch_size=bsz)
 
@@ -159,7 +158,7 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
 
     def validation_step(self, batch: Dict, batch_idx: int) -> None:
         predictions = self(batch)
-        total_val_loss = 0.0
+        weighted_task_loss_list = []
         
         # Robustly extract targets from batch
         targets = batch.get("targets", batch.get("target"))
@@ -175,7 +174,7 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
                 
             loss = self.task_losses[name](pred, target)
             self.log(f"val/{name}_loss", loss, on_step=False, on_epoch=True, sync_dist=True)
-            total_val_loss += loss * self.task_weights[name].item()
+            weighted_task_loss_list.append(loss * self.task_weights[name])
             
             if name == "outcome":
                 self._val_metrics[f"{name}_auc"].update(torch.sigmoid(pred), target.long())
@@ -183,6 +182,19 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
                 self._val_metrics[f"{name}_recall"].update(torch.sigmoid(pred), target.long())
             elif name == "phase":
                 self._val_metrics[f"{name}_acc"].update(pred, target)
+
+        losses_tensor = torch.stack(weighted_task_loss_list)
+        if self.is_pcgrad:
+            total_val_loss = losses_tensor.sum()
+        else:
+            shared_params = list(self.backbone.parameters())
+            if self.use_alb:
+                shared_params += list(self.alb.parameters())
+            total_val_loss, _ = self.weighter(
+                losses_tensor,
+                shared_params=shared_params,
+                sync_ddp=self.trainer.world_size > 1 if getattr(self, "trainer", None) else False,
+            )
 
         self.log("val/total_loss", total_val_loss, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
 

@@ -18,6 +18,9 @@ def build_checkpoints(cfg: DictConfig, output_dir: Path) -> List[ModelCheckpoint
     """
     Build ModelCheckpoint callbacks appropriate for the benchmark.
     """
+    if not cfg.train.get("save_ckpt", True):
+        return []
+
     ckpt_dir = output_dir / "checkpoints"
     benchmark = _dataset_key(cfg)
     checkpoints = []

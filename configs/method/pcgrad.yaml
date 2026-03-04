@@ -3,7 +3,13 @@
 method_name: pcgrad
 use_alb: false
 
+method:
+  name: pcgrad
+
 # Overrides the `engine` block of whatever Domain Silo is currently active
 module:
   engine:
     _target_: spectra.engine.optimizers.PCGradEngine
+
+train:
+  grad_clip: 1.0  # Safe boundary during PCGrad geometric recalibration

@@ -71,9 +71,9 @@ class ResBlock(nn.Module):
     def __init__(self, d_model: int, dropout: float = 0.1):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(d_model, d_model),
+            nn.Linear(d_model, d_model * 4),
             nn.SiLU(),
-            nn.Linear(d_model, d_model),
+            nn.Linear(d_model * 4, d_model),
             nn.Dropout(dropout),
         )
         self.norm = nn.LayerNorm(d_model)

@@ -1,13 +1,17 @@
+# @package _global_
 # ─── B-PGS Only (No ALB — For Dense Prediction / NYUv2) ──────
-name: bpgs
-
-# B-PGS parameters (Locked v3.0 Specs)
-use_sigmoid: true
-use_autocal: true
-s_min: -5.0
-s_max: 10.0
-ema_decay: 0.99
+method_name: bpgs
 
 # ALB disabled for dense prediction (SegNet backbone)
-# ALB requires temporal [B, T, C] input — incompatible with [B, C, H, W]
 use_alb: false
+
+method:
+  name: bpgs
+  use_sigmoid: true
+  use_autocal: true
+  ema_decay: 0.99
+
+# Overrides the `engine` block of whatever Domain Silo is currently active
+module:
+  engine:
+    _target_: spectra.engine.optimizers.BPGSEngine

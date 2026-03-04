@@ -119,9 +119,14 @@ class GradientHealthCallback(pl.Callback):
         self.check_interval  = check_interval
         self.spike_threshold = spike_threshold
         self._grad_norm_ema: float = -1.0  # Uninitialized
+        self._warned_this_epoch = set()   # Track conditions to prevent terminal spam
+
+    def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        self._warned_this_epoch.clear()
 
     def _track_grad_health(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
-        if trainer.global_step % self.check_interval != 0:
+        # Skip Step 0 and respect interval to avoid initialization noise
+        if trainer.global_step == 0 or trainer.global_step % self.check_interval != 0:
             return
 
         backbone = getattr(pl_module, "backbone", None)
@@ -149,35 +154,49 @@ class GradientHealthCallback(pl.Callback):
         # ── 2. Mean update-to-weight ratio ──────────────────────────
         if param_norms:
             ratios = [gn / pn for gn, pn in param_norms]
-            mean_ratio = sum(ratios) / len(ratios)
-            pl_module.log("health/update_weight_ratio", mean_ratio, sync_dist=False, prog_bar=True)
+            mean_grad_weight_ratio = sum(ratios) / len(ratios)
+            
+            # [SOTA Fix] Actual update scales with the learning rate!
+            optimizers = getattr(pl_module, "optimizers", lambda: None)()
+            if optimizers is not None:
+                opts = optimizers if isinstance(optimizers, list) else [optimizers]
+                current_lr = opts[0].param_groups[0].get("lr", 1e-3)
+            else:
+                current_lr = 1e-3
+                
+            true_update_ratio = mean_grad_weight_ratio * current_lr
+            pl_module.log("health/update_weight_ratio", true_update_ratio, sync_dist=False, prog_bar=False)
 
-            # Flag to W&B for easy monitoring
-            if mean_ratio < 1e-4:
-                logger.warning(
-                    f"[GradHealth] Step {trainer.global_step}: update/weight ratio "
-                    f"{mean_ratio:.2e} is very small — possible vanishing gradient."
-                )
-            elif mean_ratio > 0.1:
-                logger.warning(
-                    f"[GradHealth] Step {trainer.global_step}: update/weight ratio "
-                    f"{mean_ratio:.2e} is large — possible exploding gradient."
-                )
+            # Flag to W&B for EASY monitoring. Terminal warnings are RATE-LIMITED.
+            if true_update_ratio < 1e-6:
+                if "vanishing" not in self._warned_this_epoch:
+                    pl_module.print(
+                        f"[GradHealth] Step {trainer.global_step}: ratio {true_update_ratio:.2e} "
+                        f"is very small — possible vanishing gradient. (Silencing further warnings this epoch)"
+                    )
+                    self._warned_this_epoch.add("vanishing")
+            elif true_update_ratio > 0.1:
+                if "exploding" not in self._warned_this_epoch:
+                    pl_module.print(
+                        f"[GradHealth] Step {trainer.global_step}: ratio {true_update_ratio:.2e} "
+                        f"is large — possible exploding gradient. (Silencing further warnings this epoch)"
+                    )
+                    self._warned_this_epoch.add("exploding")
 
         # ── 3. Spike detection (EMA-based) ──────────────────────────
         if self._grad_norm_ema < 0:
-            # Initialize EMA on first observation
             self._grad_norm_ema = total_grad_norm
         else:
             self._grad_norm_ema = 0.99 * self._grad_norm_ema + 0.01 * total_grad_norm
 
         spike_ratio = total_grad_norm / (self._grad_norm_ema + 1e-8)
         if spike_ratio > self.spike_threshold:
-            logger.warning(
-                f"[GradSpike] Step {trainer.global_step}: backbone grad_norm={total_grad_norm:.4f} "
-                f"is {spike_ratio:.1f}× EMA ({self._grad_norm_ema:.4f}). "
-                f"Watch for NaN in next 10 steps."
-            )
+            if "spike" not in self._warned_this_epoch:
+                pl_module.print(
+                    f"[GradSpike] Step {trainer.global_step}: grad_norm={total_grad_norm:.4f} "
+                    f"is {spike_ratio:.1f}x EMA. Watch for instability. (Silencing per-step)"
+                )
+                self._warned_this_epoch.add("spike")
             pl_module.log("health/grad_spike_ratio", spike_ratio, sync_dist=False)
 
     def on_before_optimizer_step(

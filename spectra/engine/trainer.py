@@ -19,8 +19,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from omegaconf import DictConfig
+import torch.distributed as dist
 
-from spectra.core.bpgs import BPGSScaler
+from spectra.core.bpgs import BPGS
 from spectra.core.alb import AsymmetricLatentBottleneck
 from spectra.baselines import build_weighter
 from spectra.baselines.pcgrad import PCGradWeighter
@@ -135,7 +136,7 @@ class SPECTRAModule(pl.LightningModule):
         cfg: Full Hydra DictConfig.
     """
 
-    def __init__(self, cfg: DictConfig):
+    def __init__(self, cfg: DictConfig, engine: Any = None):
         super().__init__()
         # save_hyperparameters needs a dict, not DictConfig directly
         self.save_hyperparameters({"cfg": cfg})
@@ -195,12 +196,12 @@ class SPECTRAModule(pl.LightningModule):
         # ─── 4. Build Weighter ─────────────────────────────────
         self.weighter = build_weighter(cfg)
         self.is_pcgrad = isinstance(self.weighter, PCGradWeighter)
+        self.is_bpgs = isinstance(self.weighter, BPGS)
 
-        # PCGrad needs manual optimization because it computes its own
-        # per-task gradients via autograd.grad — PL automatic backward
-        # would conflict with this by calling .backward() on the sum
-        # before PCGrad has a chance to project gradients.
-        if self.is_pcgrad:
+        # [SOTA Fix] BPGS and PCGrad both require manual optimization.
+        # BPGS requires decoupled gradient flows (Network vs Uncertainty).
+        # PCGrad requires per-task gradient projections.
+        if self.is_pcgrad or self.is_bpgs:
             self.automatic_optimization = False
 
         logger.info(
@@ -409,14 +410,15 @@ class SPECTRAModule(pl.LightningModule):
                 )
 
                 # 3. Head gradients: each head sees ONLY its own task loss
-                #    (fixes cross-contamination where heads saw all losses)
-                for task_name, task_loss in zip(self.task_names, weighted_task_loss_list):
+                for idx, (task_name, task_loss) in enumerate(zip(self.task_names, weighted_task_loss_list)):
                     head_params = list(self.heads[task_name].parameters())
                     if not head_params:
                         continue
+                    
+                    is_last_head = (idx == self.num_tasks - 1)
                     head_grads = torch.autograd.grad(
                         scaler.scale(task_loss), head_params,
-                        retain_graph=True,
+                        retain_graph=not is_last_head,  # Free graph on the last head
                         allow_unused=True,
                     )
                     for p, g in zip(head_params, head_grads):
@@ -425,6 +427,13 @@ class SPECTRAModule(pl.LightningModule):
 
                 # 4. Unscale ALL gradients (backbone + heads) uniformly
                 scaler.unscale_(raw_opt)
+
+                # [Patch 3: PCGrad DDP Sync]
+                # Synchronize ALL gradients across GPUs. Both backbone and heads must be synced.
+                if self.trainer.world_size > 1 and dist.is_initialized():
+                    for p in self.parameters():
+                        if p.grad is not None:
+                            dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
 
                 # 5. Gradient clipping (on properly-unscaled gradients)
                 if self.cfg.train.get("grad_clip", 0) > 0:
@@ -465,18 +474,26 @@ class SPECTRAModule(pl.LightningModule):
                 )
 
                 # 3. Head gradients (per-task isolation)
-                for task_name, task_loss in zip(self.task_names, weighted_task_loss_list):
+                for idx, (task_name, task_loss) in enumerate(zip(self.task_names, weighted_task_loss_list)):
                     head_params = list(self.heads[task_name].parameters())
                     if not head_params:
                         continue
+                    
+                    is_last_head = (idx == self.num_tasks - 1)
                     head_grads = torch.autograd.grad(
                         task_loss, head_params,
-                        retain_graph=True,
+                        retain_graph=not is_last_head,  # Free graph on the last head
                         allow_unused=True,
                     )
                     for p, g in zip(head_params, head_grads):
                         if g is not None:
                             p.grad = g
+
+                # [Patch 3: PCGrad DDP Sync]
+                if self.trainer.world_size > 1 and dist.is_initialized():
+                    for p in self.parameters():
+                        if p.grad is not None:
+                            dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
 
                 # 4. Gradient clipping
                 if self.cfg.train.get("grad_clip", 0) > 0:
@@ -494,6 +511,68 @@ class SPECTRAModule(pl.LightningModule):
             self.log("health/backbone_grad_norm", gn, prog_bar=True, on_step=True, batch_size=bsz)
             self.log("pcgrad/total_conflicts", pcgrad_metrics.get("pcgrad/total_conflicts", 0), prog_bar=True, on_step=True, batch_size=bsz)
             w_metrics = pcgrad_metrics
+        elif self.is_bpgs:
+            # ─── B-PGS SOTA: Decoupled Manual Optimization ────────────
+            # Reference: BPGS Final Synthesized Definition
+            opts = self.optimizers()
+            opt_net = opts[0]
+            opt_unc = opts[1]
+            scaler = getattr(self.trainer.precision_plugin, "scaler", None)
+            
+            # 1. Update smoothed losses (Signal integration via NaN-gated EMA)
+            # MUST be called before loss computation.
+            self.weighter.update_ema(weighted_task_loss_list)
+            
+            # 2. Base Flow Step (Network weights w)
+            # Backprop only through precision-weighted task losses.
+            opt_net.zero_grad()
+            loss_net = self.weighter.network_loss(weighted_task_loss_list)
+            
+            if scaler is not None:
+                self.manual_backward(scaler.scale(loss_net))
+                scaler.unscale_(opt_net)
+            else:
+                self.manual_backward(loss_net)
+            
+            if self.cfg.train.get("grad_clip", 0) > 0:
+                self.clip_gradients(opt_net, gradient_clip_val=self.cfg.train.grad_clip)
+                
+            if scaler is not None:
+                scaler.step(opt_net)
+            else:
+                opt_net.step()
+                
+            # 3. Fiber Flow Step (Uncertainty parameters theta)
+            # Backprop only through the uncertainty regularization manifold.
+            opt_unc.zero_grad()
+            loss_unc = self.weighter.uncertainty_loss()
+            
+            if scaler is not None:
+                self.manual_backward(scaler.scale(loss_unc))
+                scaler.unscale_(opt_unc)
+            else:
+                self.manual_backward(loss_unc)
+                
+            # [SOTA Requirement] Decoupled DDP Sync for Weighter Parameters
+            if self.trainer.world_size > 1 and dist.is_initialized():
+                for p in self.weighter.parameters():
+                    if p.grad is not None:
+                        dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+
+            if scaler is not None:
+                scaler.step(opt_unc)
+                scaler.update()
+            else:
+                opt_unc.step()
+            
+            # 4. Schedule step (Standard schedule is tied to opt_net)
+            sch = self.lr_schedulers()
+            if sch is not None:
+                sch.step()
+                
+            # Prepare for logging
+            total_loss = loss_net
+            w_metrics = self.weighter.get_task_stats()
         else:
             # ─── Standard optimization path ───────────────────
             shared_params = list(self.backbone.parameters())
@@ -522,9 +601,9 @@ class SPECTRAModule(pl.LightningModule):
         for key, val in w_metrics.items():
             self.log(f"train/{key}", val, on_step=False, on_epoch=True, sync_dist=True, batch_size=batch.get("input").shape[0])
 
-        # For PCGrad, return None (manual optimization).
+        # For PCGrad/BPGS, return None (manual optimization).
         # For others, return total_loss for PL automatic backward.
-        return None if self.is_pcgrad else total_loss
+        return None if (self.is_pcgrad or self.is_bpgs) else total_loss
 
     def on_train_batch_end(self, outputs: Any, batch: Any, batch_idx: int) -> None:
         # [SPECTRA FIX] Post-step manifold projection for B-PGS
@@ -681,42 +760,55 @@ class SPECTRAModule(pl.LightningModule):
     # =================================================================
 
     def configure_optimizers(self):
-        # Separate weight-decay params from norms/biases
-        decay_params = []
-        no_decay_params = []
+        # 1. Parameter Grouping: Separate Network from Uncertainty (for BPGS)
+        # And separate Weight-Decay from Non-Decay (for all)
+        net_decay = []
+        net_no_decay = []
+        unc_params = []
 
+        no_decay_keywords = ["bias", "norm", "bn", "LayerNorm"]
+        
         for name, param in self.named_parameters():
             if not param.requires_grad:
                 continue
             
-            # CRITICAL: Weighter parameters MUST NOT get weight decay, otherwise
-            # log_vars/theta will be regularized towards 0, destroying Bayesian learning!
-            no_weight_decay_keywords = [
-                "bias", "norm", "bn", "LayerNorm",
-                "weighter", "log_vars", "theta"
-            ]
-            if any(nd in name for nd in no_weight_decay_keywords):
-                no_decay_params.append(param)
+            # If BPGS is active, its parameters MUST be in a separate optimizer
+            if self.is_bpgs and "weighter" in name:
+                unc_params.append(param)
             else:
-                decay_params.append(param)
+                # Standard model parameters
+                if any(nd in name for nd in no_decay_keywords):
+                    net_no_decay.append(param)
+                else:
+                    net_decay.append(param)
 
-        optimizer = torch.optim.AdamW([
-            {"params": decay_params, "weight_decay": self.cfg.train.weight_decay},
-            {"params": no_decay_params, "weight_decay": 0.0},
+        # 2. Build Optimizer(s)
+        opt_net = torch.optim.AdamW([
+            {"params": net_decay, "weight_decay": self.cfg.train.weight_decay},
+            {"params": net_no_decay, "weight_decay": 0.0},
         ], lr=self.cfg.train.lr)
 
-        # Cosine warmup scheduler
-        scheduler = get_cosine_schedule_with_warmup(
-            optimizer,
+        # Cosine warmup scheduler for the main network
+        sch_net = get_cosine_schedule_with_warmup(
+            opt_net,
             num_warmup_steps=self.cfg.train.warmup_steps,
             num_training_steps=self.trainer.estimated_stepping_batches,
             min_lr_ratio=self.cfg.train.get("min_lr", 1e-6) / self.cfg.train.lr,
         )
 
+        if self.is_bpgs:
+            # SOTA Requirement: Decoupled Uncertainty Optimizer
+            lr_unc = self.cfg.method.get("lr_theta", self.cfg.train.lr)
+            opt_unc = torch.optim.AdamW(unc_params, lr=lr_unc, weight_decay=0.0)
+            
+            # Note: We return both optimizers. PyTorch Lightning manual optimization
+            # allows us to step them independently in training_step.
+            return [opt_net, opt_unc], [{"scheduler": sch_net, "interval": "step"}]
+            
         return {
-            "optimizer": optimizer,
+            "optimizer": opt_net,
             "lr_scheduler": {
-                "scheduler": scheduler,
+                "scheduler": sch_net,
                 "interval": "step",
                 "frequency": 1,
             },

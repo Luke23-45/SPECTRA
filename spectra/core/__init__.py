@@ -4,9 +4,9 @@
 # when only one module is needed.
 
 
-def BPGSScaler(*args, **kwargs):
-    from spectra.core.bpgs import BPGSScaler as _BPGSScaler
-    return _BPGSScaler(*args, **kwargs)
+def BPGS(*args, **kwargs):
+    from spectra.core.bpgs import BPGS as _BPGS
+    return _BPGS(*args, **kwargs)
 
 
 def AsymmetricLatentBottleneck(*args, **kwargs):
@@ -14,4 +14,4 @@ def AsymmetricLatentBottleneck(*args, **kwargs):
     return _ALB(*args, **kwargs)
 
 
-__all__ = ["BPGSScaler", "AsymmetricLatentBottleneck"]
+__all__ = ["BPGS", "AsymmetricLatentBottleneck"]

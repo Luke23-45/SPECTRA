@@ -6,6 +6,7 @@ PCGrad Manual Surgery Engine.
 
 from typing import Dict, Any, List
 import torch
+import torch.distributed as dist
 import pytorch_lightning as pl
 
 from spectra.engine.optimizers.base import OptimizationEngine
@@ -64,14 +65,16 @@ class PCGradEngine(OptimizationEngine):
             pcgrad_metrics = module.weighter.project_and_assign(task_grads, shared_params)
 
             # 3. Head gradients: each head sees ONLY its own task loss
-            for task_name, task_loss in losses.items():
+            for idx, (task_name, task_loss) in enumerate(losses.items()):
                 if task_name in module.heads:
                     head_params = list(module.heads[task_name].parameters())
                     if not head_params:
                         continue
+                    
+                    is_last_head = (idx == len(losses) - 1)
                     head_grads = torch.autograd.grad(
                         scaler.scale(task_loss), head_params,
-                        retain_graph=True,
+                        retain_graph=not is_last_head,  # Free graph on the last head
                         allow_unused=True,
                     )
                     for p, g in zip(head_params, head_grads):
@@ -122,14 +125,16 @@ class PCGradEngine(OptimizationEngine):
             pcgrad_metrics = module.weighter.project_and_assign(task_grads, shared_params)
 
             # 3. Head gradients
-            for task_name, task_loss in losses.items():
+            for idx, (task_name, task_loss) in enumerate(losses.items()):
                 if task_name in module.heads:
                     head_params = list(module.heads[task_name].parameters())
                     if not head_params:
                         continue
+                    
+                    is_last_head = (idx == len(losses) - 1)
                     head_grads = torch.autograd.grad(
                         task_loss, head_params,
-                        retain_graph=True,
+                        retain_graph=not is_last_head,  # Free graph on the last head
                         allow_unused=True,
                     )
                     for p, g in zip(head_params, head_grads):

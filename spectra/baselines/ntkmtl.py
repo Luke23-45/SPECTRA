@@ -123,13 +123,15 @@ class NTKMTLWeighter(BaseWeighter):
         """
         norms = []
         for idx, i in enumerate(range(self.num_tasks)):
-            # [SOTA Fix: Instant GC] Force PyTorch to free massive computational graph buffers instantly
-            is_last = (idx == self.num_tasks - 1)
-            
-            # Compute gradient norm for each task (fully asynchronous)
+            # CRITICAL FIX: retain_graph must ALWAYS be True here.
+            # The computation graph is shared with the `losses` tensor used
+            # by forward() at L96 for total_loss = (weights * losses).sum().
+            # PL's automatic backward needs this graph AFTER this method returns.
+            # Previously: retain_graph=not is_last freed the graph on the last
+            # task, causing RuntimeError every update_interval steps.
             grads = torch.autograd.grad(
                 losses[i], shared_params,
-                retain_graph=not is_last,
+                retain_graph=True,
                 allow_unused=True,
             )
             # Use torch.tensor(0.0) fallback to guarantee tensor outputs for sum

@@ -56,7 +56,7 @@ class PCGradWeighter(BaseWeighter):
         """Returns unweighted sum. Actual gradient surgery happens in backward_and_project()."""
         total = losses.sum()
         metrics = {
-            f"pcgrad/conflict_{i}": self.conflict_count[i].item()
+            f"pcgrad/conflict_{i}": self.conflict_count[i]
             for i in range(self.num_tasks)
         }
         return total, metrics
@@ -146,22 +146,15 @@ class PCGradWeighter(BaseWeighter):
                 else:
                     param.grad.copy_(final_grad)
 
-        # 5. Telemetry & DDP Synchronization (Optional)
-        # Optimization: One global reduction instead of per-parameter
-        if torch.distributed.is_initialized():
-            for p in shared_params:
-                torch.distributed.all_reduce(p.grad, op=torch.distributed.ReduceOp.SUM)
-                p.grad /= torch.distributed.get_world_size()
-
-        # Update running status
+        # 5. Telemetry (Conflict EMA update)
         with torch.no_grad():
             self.conflict_count.lerp_(conflict_counts, 0.1)
 
         metrics = {
-            f"pcgrad/conflict_{i}": conflict_counts[i].item()
+            f"pcgrad/conflict_{i}": conflict_counts[i]
             for i in range(num_tasks)
         }
-        metrics["pcgrad/total_conflicts"] = conflict_counts.sum().item()
+        metrics["pcgrad/total_conflicts"] = conflict_counts.sum()
         return metrics
 
     def project_and_assign(
@@ -224,20 +217,14 @@ class PCGradWeighter(BaseWeighter):
                 else:
                     param.grad.copy_(final_grad)
 
-        # DDP synchronization
-        if torch.distributed.is_initialized():
-            for p in shared_params:
-                torch.distributed.all_reduce(p.grad, op=torch.distributed.ReduceOp.SUM)
-                p.grad /= torch.distributed.get_world_size()
-
         # Update running conflict EMA
         with torch.no_grad():
             self.conflict_count.lerp_(conflict_counts, 0.1)
 
         metrics = {
-            f"pcgrad/conflict_{i}": conflict_counts[i].item()
+            f"pcgrad/conflict_{i}": conflict_counts[i]
             for i in range(num_tasks)
         }
-        metrics["pcgrad/total_conflicts"] = conflict_counts.sum().item()
+        metrics["pcgrad/total_conflicts"] = conflict_counts.sum()
         return metrics
 

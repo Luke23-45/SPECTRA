@@ -12,6 +12,13 @@ class SOTAProgressBar(TQDMProgressBar):
     Research-Grade Progress Bar (SOTA Style).
     Maps long metric keys to concise research shorthand (GN, L, AUC, etc.).
     """
+    def __init__(self, *args, **kwargs):
+        # Force leave=True to ensure each epoch stays in the terminal history
+        # (The "Force Next Line" SOTA Requirement)
+        if "leave" not in kwargs:
+            kwargs["leave"] = True
+        super().__init__(*args, **kwargs)
+
     def init_train_tqdm(self) -> tqdm:
         bar = super().init_train_tqdm()
         # "Gold Standard" Format: Dense, no bars, high-fidelity telemetry
@@ -29,6 +36,7 @@ class SOTAProgressBar(TQDMProgressBar):
         
         # SOTA Shorthand Mapping
         mapping = {
+            "loss": "L",
             "train/total_loss": "L",
             "health/backbone_grad_norm": "GN",
             "health/update_weight_ratio": "Ratio",

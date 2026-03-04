@@ -1,7 +1,8 @@
+# @package _global_
 # configs/dataset/nyuv2.yaml
 # Dataset configuration for NYUv2 multi-task dense prediction benchmark.
 
-name: nyuv2
+dataset_name: nyuv2
 root: "datasets/nyuv2_lmdb"      # Root directory for high-fidelity LMDBs
 augmentation: true            # RandomScaleCrop + RandomHorizontalFlip (train only)
 normalize_rgb: false          # ImageNet normalization (enable for pretrained backbones)
@@ -43,3 +44,6 @@ tasks:
     type: dense_regression
     loss: cosine_dense
     output_dim: 3
+
+train:
+  save_ckpt: true

@@ -56,30 +56,57 @@ class SyntheticMTLDataset(Dataset):
         hidden_dim: int = 64,
         task_configs: Optional[List[Dict]] = None,
         seed: int = 42,
+        mapping_seed: int = 42,
     ):
         super().__init__()
         self.task_configs = task_configs or self.DEFAULT_TASKS
 
-        gen = torch.Generator().manual_seed(seed)
+        # [SOTA FIX]: Decouple Data Generation from Mapping Generation.
+        # Otherwise passing `seed=seed+1` for validation inadvertently changes the 
+        # actual target mapping network, making validation loss mathematically diverge.
+        gen_data = torch.Generator().manual_seed(seed)
+        
+        # [SOTA FIX]: Generator Collision Leakage. 
+        # If mapping_seed == seed, the first N elements of X will perfectly mirror W_shared.
+        # We must mathematically offset the generator states to guarantee orthogonality.
+        gen_mapping = torch.Generator().manual_seed(mapping_seed + 1048576)
 
-        # Generate shared features
-        self.X = torch.randn(n_samples, input_dim, generator=gen)
-        W_shared = torch.randn(input_dim, hidden_dim, generator=gen) * 0.1
-        Z = self.X @ W_shared  # [N, hidden_dim]
+        # [SOTA FIX]: Generate highly non-linear shared features to induce gradient conflicts
+        # A purely linear mapping is trivial and won't trigger PCGrad or B-PGS surgeries.
+        self.X = torch.randn(n_samples, input_dim, generator=gen_data)
+        
+        W_shared1 = torch.randn(input_dim, hidden_dim, generator=gen_mapping) * 0.1
+        W_shared2 = torch.randn(input_dim, hidden_dim, generator=gen_mapping) * 0.1
+        
+        # Two-stream topology (Tanh + ReLU) forces a non-convex representation space
+        Z = torch.tanh(self.X @ W_shared1) + torch.relu(self.X @ W_shared2)  # [N, hidden_dim]
 
-        # Generate per-task targets
+        # Generate per-task targets with explicit Aleatoric Noise (Homoscedastic uncertainty)
+        # Probabilistic algorithms (Kendall, UWSO) will crash or collapse if the data is 100% deterministic
         self.targets = {}
         for cfg in self.task_configs:
-            W_task = torch.randn(hidden_dim, 1, generator=gen) * cfg["scale"]
+            W_task = torch.randn(hidden_dim, 1, generator=gen_mapping) * cfg["scale"]
 
             if cfg["type"] == "mse":
                 y = Z @ W_task + cfg["offset"]  # [N, 1]
-                self.targets[cfg["name"]] = y.squeeze(-1)
+                # Inject 10% structural Gaussian noise (Irreducible Error)
+                noise = torch.randn(y.size(), generator=gen_data, dtype=y.dtype, device=y.device) * (cfg["scale"] * 0.1)
+                self.targets[cfg["name"]] = (y + noise).squeeze(-1)
 
             elif cfg["type"] == "bce":
-                logits = Z @ W_task
-                y = (logits > 0).float().squeeze(-1)  # [N]
-                self.targets[cfg["name"]] = y
+                # Ensure the configurable offset is actually used for classification imbalance
+                logits = Z @ W_task + cfg["offset"]  # [N, 1]
+                
+                # [SOTA FIX]: Probabilistic targets.
+                # A hard margin `y = (logits > 0)` creates a deterministic step function.
+                # Optimizing BCE on a deterministic step function pushes network weights to infinity, 
+                # causing gradient magnitude explosion. This physically destroys gradient-variance 
+                # probabilistic weighters like B-PGS and Kendall. We must use proper Bernoulli 
+                # sampling to create a calibrated, finite-weight stationary optimum.
+                probs = torch.sigmoid(logits)
+                y = torch.bernoulli(probs, generator=gen_data)
+                
+                self.targets[cfg["name"]] = y.squeeze(-1)
 
     def __len__(self) -> int:
         return len(self.X)

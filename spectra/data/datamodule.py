@@ -67,13 +67,15 @@ class SPECTRADataModule(pl.LightningDataModule):
                 n_samples=self.cfg.data.n_train,
                 input_dim=self.cfg.model.input_dim,
                 hidden_dim=self.cfg.model.d_model,
-                seed=self.cfg.seed
+                seed=self.cfg.seed,
+                mapping_seed=self.cfg.seed
             )
             self.val_ds = SyntheticMTLDataset(
                 n_samples=self.cfg.data.n_val,
                 input_dim=self.cfg.model.input_dim,
                 hidden_dim=self.cfg.model.d_model,
-                seed=self.cfg.seed + 1
+                seed=self.cfg.seed + 1,
+                mapping_seed=self.cfg.seed  # Critical: same function/mapping as train
             )
             
         elif self.dataset_name == "nyuv2":
@@ -143,8 +145,6 @@ class SPECTRADataModule(pl.LightningDataModule):
         
         # Others (Vision/Synthetic)
         sampler = None
-        if torch.distributed.is_initialized():
-            sampler = DistributedSampler(self.train_ds, shuffle=True, seed=self.cfg.seed)
             
         collate_fn = None
         if self.dataset_name == "nyuv2":

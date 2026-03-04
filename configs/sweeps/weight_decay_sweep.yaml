@@ -1,0 +1,11 @@
+# @package _global_
+# configs/sweeps/weight_decay_sweep.yaml
+# Enable Hydra multirun grid search for optimal hyperparameter discovery.
+# Usage: python scripts/train.py --multirun +sweeps=weight_decay_sweep
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      train.weight_decay: 1e-5, 1e-4, 5e-4, 1e-3
+      train.lr: 1e-4, 5e-4, 1e-3, 5e-3

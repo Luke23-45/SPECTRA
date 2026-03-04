@@ -41,7 +41,7 @@ class RegressionHead(nn.Module):
             [B, output_dim] predictions.
         """
         if features.dim() == 3:
-            features = features.mean(dim=1)  # Pool temporal dim
+            features = features[:, -1, :]  # Extract final state instead of mean pooling
         return self.net(features)
 
 
@@ -69,5 +69,5 @@ class ClassificationHead(nn.Module):
 
     def forward(self, features: torch.Tensor, global_ctx: Optional[torch.Tensor] = None) -> torch.Tensor:
         if features.dim() == 3:
-            features = features.mean(dim=1)
+            features = features[:, -1, :]  # Extract final state instead of mean pooling
         return self.net(features)  # Raw logits (loss applies sigmoid/softmax)

@@ -59,6 +59,7 @@ class SegNetEncoderBlock(nn.Module):
         self.bn1 = nn.BatchNorm2d(out_channels)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(out_channels)
+        self.dropout = nn.Dropout2d(p=0.1)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2, return_indices=True)
 
     def forward(self, x: torch.Tensor):
@@ -68,6 +69,7 @@ class SegNetEncoderBlock(nn.Module):
         """
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
+        x = self.dropout(x)
         pre_pool_size = x.size()
         x, indices = self.pool(x)
         return x, indices, pre_pool_size
@@ -92,11 +94,13 @@ class SegNetDecoderBlock(nn.Module):
         self.bn1 = nn.BatchNorm2d(in_channels)
         self.conv2 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(out_channels)
+        self.dropout = nn.Dropout2d(p=0.1)
 
     def forward(self, x: torch.Tensor, indices: torch.Tensor, output_size: torch.Size):
         x = self.unpool(x, indices, output_size=output_size)
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
+        x = self.dropout(x)
         return x
 
 

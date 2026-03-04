@@ -19,23 +19,35 @@ WEIGHTER_REGISTRY = {
 
 def build_weighter(cfg):
     """Factory: builds a weighter from Hydra config."""
-    name = cfg.method.name
+    # Robust extraction supporting both old-style and new-style Hydra configs
+    name = cfg.get("method_name") or cfg.get("method", {}).get("name")
+    
     if name == "bpgs" or name == "bpgs_alb":
-        from spectra.core.bpgs import BPGSScaler
-        return BPGSScaler(
+        from spectra.core.bpgs import BPGS
+        m_cfg = cfg.get("method", {})
+        
+        # Tau fallback and ema_decay conversion
+        tau = m_cfg.get("tau", 50.0)
+        if "ema_decay" in m_cfg and "tau" not in m_cfg:
+            # alpha = 1 - decay; tau = 1/alpha
+            decay = m_cfg.get("ema_decay")
+            tau = 1.0 / (1.0 - decay) if decay < 1.0 else 100.0
+            
+        return BPGS(
             num_tasks=len(cfg.tasks),
-            s_min=cfg.method.get("s_min", -2.0),
-            s_max=cfg.method.get("s_max", 10.0),
-            ema_decay=cfg.method.get("ema_decay", 0.99),
-            use_sigmoid=cfg.method.get("use_sigmoid", True),
-            use_autocal=cfg.method.get("use_autocal", True),
+            s_min=m_cfg.get("s_min", -10.0),
+            s_max=m_cfg.get("s_max", 10.0),
+            tau=tau,
+            eps=m_cfg.get("eps", 1e-5),
+            s_init=m_cfg.get("s_init", 0.0),
+            prior_var=m_cfg.get("prior_var", None)
         )
     
     cls = WEIGHTER_REGISTRY.get(name)
     if cls is None:
         raise ValueError(f"Unknown weighting method: {name}. Available: {list(WEIGHTER_REGISTRY.keys())}")
     
-    params = cfg.method.get("params", {})
+    params = cfg.get("params") or cfg.get("method", {}).get("params", {})
     return cls(num_tasks=len(cfg.tasks), **params)
 
 

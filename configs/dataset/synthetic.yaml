@@ -56,18 +56,19 @@ tasks:
 
 # ─── Training Hyperparameters ────────────────────────────────
 train:
-  epochs: 500
+  save_ckpt: false
+  epochs: 100
   batch_size: 256
   lr: 0.001
   min_lr: 0.00001
   warmup_steps: 200
   weight_decay: 0.0001
   grad_clip: 2.0
-  precision: 32
+  precision: "16-mixed"
   num_workers: 2
   log_every_n_steps: 50
 
 # ─── Data ────────────────────────────────────────────────────
 data:
-  n_train: 10000
-  n_val: 2000
+  n_train: 50000
+  n_val: 10000

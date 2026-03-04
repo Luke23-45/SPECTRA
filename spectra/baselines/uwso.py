@@ -69,14 +69,24 @@ class UWSOWeighter(BaseWeighter):
 
         # Analytical weights (NO learnable parameters)
         ema_safe = self.loss_ema.detach().clamp(min=1e-6)
-        weights = 1.0 / (2.0 * ema_safe ** 2 + 1e-8)
+        raw_weights = 1.0 / (2.0 * ema_safe ** 2 + 1e-8)
+        
+        # [SOTA Fix] Gradient-Normalized Taming (Sum-to-1 Alignment)
+        # Prevents initial loss magnitude inflation. Rescales analytical weights
+        # such that they sum to 1.0, matching the standard averaging baseline.
+        weights = (raw_weights / (raw_weights.sum() + 1e-8)) * 1.0
+        
         regularizer = torch.log(ema_safe + 1e-8)
 
-        total = (weights * losses + regularizer).sum()
+        # [SOTA Fix] Manifold Average Alignment
+        # We sum the precision-weighted losses (which sum to 1) and add the 
+        # mean regularizer. This ensures the total loss stays on the same
+        # scale as the 'Static' average baseline regardless of task count N.
+        total = (weights * losses).sum() + regularizer.mean()
 
         metrics = {}
         for i in range(self.num_tasks):
-            metrics[f"uwso/weight_{i}"] = weights[i].item()
-            metrics[f"uwso/loss_ema_{i}"] = self.loss_ema[i].item()
+            metrics[f"uwso/weight_{i}"] = weights[i]
+            metrics[f"uwso/loss_ema_{i}"] = self.loss_ema[i]
 
         return total, metrics

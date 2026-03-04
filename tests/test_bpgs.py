@@ -19,7 +19,7 @@ import torch.nn as nn
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from spectra.core.bpgs import BPGSScaler
+from spectra.core.bpgs import BPGS
 
 
 class TestBPGSBounds:
@@ -27,17 +27,18 @@ class TestBPGSBounds:
 
     def test_bounds_random_theta(self):
         """For 10,000 random theta values, log_vars must be in [s_min, s_max]."""
-        scaler = BPGSScaler(num_tasks=5, s_min=-3.0, s_max=8.0)
+        scaler = BPGS(num_tasks=5, s_min=-3.0, s_max=8.0)
         with torch.no_grad():
             for _ in range(100):
                 scaler.theta.data = torch.randn(5) * 50  # Wild values
                 log_vars = scaler.get_log_vars()
-                assert (log_vars >= -3.0).all(), f"Below s_min: {log_vars}"
-                assert (log_vars <= 8.0).all(), f"Above s_max: {log_vars}"
+                for v in log_vars:
+                    assert (v >= -3.0), f"Below s_min: {log_vars}"
+                    assert (v <= 8.0), f"Above s_max: {log_vars}"
 
     def test_bounds_extreme_theta(self):
         """Extreme theta values (+/-1000) must still produce valid bounds."""
-        scaler = BPGSScaler(num_tasks=3, s_min=-2.0, s_max=10.0)
+        scaler = BPGS(num_tasks=3, s_min=-2.0, s_max=10.0)
         with torch.no_grad():
             scaler.theta.data = torch.tensor([1000.0, -1000.0, 0.0])
         log_vars = scaler.get_log_vars()
@@ -47,70 +48,62 @@ class TestBPGSBounds:
 
 
 class TestBPGSGradients:
-    """Test 2: Gradients always flow through sigmoid."""
+    """Test 2: Gradients always flow through manifold."""
 
     def test_gradient_exists(self):
-        """theta.grad must be non-None and non-zero after backward."""
-        scaler = BPGSScaler(num_tasks=3, s_min=-2.0, s_max=10.0)
-        losses = torch.tensor([100.0, 5.0, 0.5], requires_grad=True)
-        total, _ = scaler(losses, sync_ddp=False)
-        total.backward()
+        """theta.grad must be non-None and non-zero after uncertainty backward."""
+        scaler = BPGS(num_tasks=3, s_min=-2.0, s_max=10.0)
+        # Update EMA with some signal
+        scaler.update_ema([torch.tensor(100.0), torch.tensor(5.0), torch.tensor(0.5)])
+        
+        loss_unc = scaler.uncertainty_loss()
+        loss_unc.backward()
+        
         assert scaler.theta.grad is not None
         assert scaler.theta.grad.abs().sum() > 0
 
     def test_gradient_at_boundary(self):
         """Gradients must be non-zero even when theta pushes toward bounds."""
-        scaler = BPGSScaler(num_tasks=2, s_min=-2.0, s_max=10.0)
+        scaler = BPGS(num_tasks=2, s_min=-2.0, s_max=10.0)
         with torch.no_grad():
             # Use moderate values where sigmoid is near boundary but not saturated
-            # sigmoid(5) ≈ 0.993, sigmoid'(5) ≈ 0.0066 — measurable gradient
             scaler.theta.data = torch.tensor([5.0, -5.0])
-            scaler.is_calibrated.fill_(True)
-        losses = torch.tensor([10.0, 0.1], requires_grad=True)
-        total, _ = scaler(losses, sync_ddp=False)
-        total.backward()
+            
+        scaler.update_ema([torch.tensor(10.0), torch.tensor(0.1)])
+        loss_unc = scaler.uncertainty_loss()
+        loss_unc.backward()
+        
         # Both gradients must be non-zero (sigmoid near boundary still has gradient)
         assert scaler.theta.grad[0].abs() > 1e-6
         assert scaler.theta.grad[1].abs() > 1e-6
 
 
-class TestBPGSAutoCalibration:
-    """Test 3: Auto-calibration sets log_vars ≈ log(L₀)."""
+class TestBPGSEMA:
+    """Test 3: EMA (Smoothed Loss) behavior."""
 
-    def test_autocal_correctness(self):
-        """After auto_calibrate, log_vars should approximate log(losses)."""
-        scaler = BPGSScaler(num_tasks=3, s_min=-5.0, s_max=12.0)
-        losses = torch.tensor([3000.0, 2.0, 0.5])
-        scaler.auto_calibrate(losses)
+    def test_ema_initialization(self):
+        """L_bar should initialize to 1.0 (not 0.0) for stability."""
+        scaler = BPGS(num_tasks=3)
+        l_bar = scaler.get_L_bar()
+        assert all(v == 1.0 for v in l_bar)
 
-        log_vars = scaler.get_log_vars()
-        expected = torch.log(losses)
-
-        for i in range(3):
-            diff = abs(log_vars[i].item() - expected[i].item())
-            assert diff < 0.2, (
-                f"Task {i}: log_var={log_vars[i]:.3f}, "
-                f"expected={expected[i]:.3f}, diff={diff:.4f}"
-            )
-
-    def test_autocal_runs_only_once(self):
-        """Auto-calibration should only fire on the first forward pass."""
-        scaler = BPGSScaler(num_tasks=2, s_min=-2.0, s_max=10.0)
-        losses1 = torch.tensor([100.0, 1.0], requires_grad=True)
-        scaler(losses1, sync_ddp=False)
-
-        log_vars_after_first = scaler.get_log_vars().detach().clone()
-
-        # Second forward with different losses — should NOT recalibrate
-        losses2 = torch.tensor([0.01, 5000.0], requires_grad=True)
-        scaler(losses2, sync_ddp=False)
-
-        log_vars_after_second = scaler.get_log_vars().detach()
-        # Log vars should change slightly (optimizer step), but NOT jump to new calibration
-        # The key test: they shouldn't match log(losses2)
-        wrong_target = torch.log(losses2.detach())
-        diff = (log_vars_after_second - wrong_target).abs().sum()
-        assert diff > 1.0, "Auto-calibration fired twice!"
+    def test_ema_convergence_relative(self):
+        """[SOTA Update] EMA now tracks relative loss (normalized by global scale).
+        A constant loss signal should result in a relative L_bar of 1.0.
+        """
+        tau = 10.0
+        scaler = BPGS(num_tasks=1, tau=tau)
+        target = 5.0
+        
+        # Run for sufficient steps to converge
+        for _ in range(200):
+            scaler.update_ema([torch.tensor(target)])
+            
+        final_l_bar = scaler.get_L_bar()[0]
+        # In the new implementation, L_bar = loss / global_ema.
+        # If loss is constant, L_bar converges to 1.0.
+        assert abs(final_l_bar - 1.0) < 1e-3
+        assert abs(scaler.total_loss_ema.item() - target) < 1e-3
 
 
 class TestBPGSShadowVariable:
@@ -119,87 +112,90 @@ class TestBPGSShadowVariable:
     def test_no_theta_explosion(self):
         """After many optimizer steps, theta should stay reasonable (not ±10000)."""
         scaler = BPGSScaler(num_tasks=2, s_min=-2.0, s_max=10.0)
-        optimizer = torch.optim.Adam(scaler.parameters(), lr=0.1)
+class TestBPGSShadowVariable:
+    """Test 4: Parameter dynamics under high stress."""
 
-        losses = torch.tensor([1000.0, 0.1], requires_grad=True)
-        for _ in range(200):
-            losses = torch.tensor([1000.0, 0.1], requires_grad=True)
-            total, _ = scaler(losses, sync_ddp=False)
+    def test_no_theta_explosion(self):
+        """Even with massive losses, theta should stay finite due to manifold curvature."""
+        scaler = BPGS(num_tasks=2, s_min=-2.0, s_max=10.0)
+        optimizer = torch.optim.Adam(scaler.parameters(), lr=1.0)
+        
+        for _ in range(50):
+            losses = [torch.tensor(1e6), torch.tensor(1e6)]
+            scaler.update_ema(losses)
             optimizer.zero_grad()
-            total.backward()
+            l_unc = scaler.uncertainty_loss()
+            l_unc.backward()
             optimizer.step()
-
-        # Theta should stay within a reasonable range
-        assert scaler.theta.data.abs().max() < 50.0, (
-            f"Theta exploded: {scaler.theta.data}"
-        )
+            
+        assert torch.isfinite(scaler.theta).all()
+        log_vars = scaler.get_log_vars()
+        assert all(v <= 10.1 for v in log_vars)
 
     def test_recovery_after_reversal(self):
-        """Log_var should move in different directions for different loss scales."""
-        scaler = BPGSScaler(num_tasks=1, s_min=-2.0, s_max=10.0, use_autocal=False)
-        optimizer = torch.optim.Adam(scaler.parameters(), lr=0.01)
+        """Log_var should move in according to loss scales."""
+        scaler = BPGS(num_tasks=1, s_min=-2.0, s_max=10.0)
+        optimizer = torch.optim.Adam(scaler.parameters(), lr=0.1)
 
-        # Phase 1: train with small losses → optimizer should push log_var lower
-        # (lower log_var = higher precision = appropriate for small losses)
-        for _ in range(100):
-            losses = torch.tensor([0.001], requires_grad=True)
-            total, _ = scaler(losses, sync_ddp=False)
+        # Phase 1: Small losses
+        for _ in range(50):
+            scaler.update_ema([torch.tensor(0.001)])
             optimizer.zero_grad()
-            total.backward()
+            l_unc = scaler.uncertainty_loss()
+            l_unc.backward()
             optimizer.step()
 
-        log_var_after_small = scaler.get_log_vars()[0].item()
+        log_var_small = scaler.get_log_vars()[0]
 
-        # Phase 2: train with large losses → optimizer should push log_var higher
-        # (higher log_var = lower precision = appropriate for large losses)
-        for _ in range(200):
-            losses = torch.tensor([10000.0], requires_grad=True)
-            total, _ = scaler(losses, sync_ddp=False)
+        # Phase 2: Large losses
+        for _ in range(50):
+            scaler.update_ema([torch.tensor(1000.0)])
             optimizer.zero_grad()
-            total.backward()
+            l_unc = scaler.uncertainty_loss()
+            l_unc.backward()
             optimizer.step()
 
-        log_var_after_large = scaler.get_log_vars()[0].item()
-
-        # After seeing large losses, log_var should be HIGHER than after small losses
-        assert log_var_after_large > log_var_after_small, (
-            f"Expected log_var to increase for larger losses: "
-            f"after_small={log_var_after_small:.3f}, after_large={log_var_after_large:.3f}"
-        )
+        log_var_large = scaler.get_log_vars()[0]
+        assert log_var_large > log_var_small
 
 
-class TestBPGSSTE:
-    """Test 5: STE ablation mode comparison."""
+class TestBPGSIntegration:
+    """Test 5: Integration with network losses."""
 
-    def test_ste_mode_runs(self):
-        """STE (hard clamp) mode should execute without errors."""
-        scaler = BPGSScaler(num_tasks=3, use_sigmoid=False, use_autocal=False)
-        losses = torch.tensor([10.0, 5.0, 1.0], requires_grad=True)
-        total, metrics = scaler(losses, sync_ddp=False)
-        total.backward()
-        assert torch.isfinite(total)
+    def test_network_loss_weight_projection(self):
+        """[SOTA Update] Network weights must sum to num_tasks (Sum-to-N)."""
+        num_tasks = 4
+        scaler = BPGS(num_tasks=num_tasks)
+        # Force unbalanced theta
+        with torch.no_grad():
+            scaler.theta.data = torch.randn(num_tasks) * 5.0
+            
+        losses = [torch.tensor(1.0, requires_grad=True) for _ in range(num_tasks)]
+        
+        # Trigger weight norm via dummy forward or manual weights check
+        # We check the actual gradient scaling
+        l_net = scaler.network_loss(losses)
+        l_net.backward()
+        
+        # Extract grads from the leaf tensors
+        grads = torch.tensor([l.grad.item() for l in losses])
+        # Since network_loss = \sum 0.5 * w_i * L_i, dL/dL_i = 0.5 * w_i
+        # Thus \sum w_i = (\sum dL/dL_i) / 0.5
+        sum_weights = grads.sum().item() / 0.5
+        
+        # Sum of weights must be EXACTLY num_tasks
+        assert abs(sum_weights - num_tasks) < 1e-5
 
-
-class TestBPGSForward:
-    """Test 6: Basic forward/backward correctness."""
-
-    def test_output_shape(self):
-        scaler = BPGSScaler(num_tasks=4)
-        losses = torch.tensor([1.0, 2.0, 3.0, 4.0], requires_grad=True)
-        total, metrics = scaler(losses, sync_ddp=False)
-        assert total.dim() == 0  # Scalar
-        assert total.requires_grad
-        assert "bpgs/log_var_0" in metrics
-        assert "bpgs/weight_3" in metrics
-
-    def test_nan_input_handling(self):
-        """NaN in auto-calibration input should be handled gracefully."""
-        scaler = BPGSScaler(num_tasks=3)
-        losses = torch.tensor([float("nan"), 5.0, 1.0], requires_grad=True)
-        # Should not crash
-        total, _ = scaler(losses, sync_ddp=False)
-        # May produce NaN in output (expected with NaN input), but shouldn't crash
+    def test_nan_gate_resilience(self):
+        """EMA should ignore NaN/Inf signals via NaN Gate."""
+        scaler = BPGS(num_tasks=1)
+        scaler.update_ema([torch.tensor(5.0)])
+        initial_l_bar = scaler.get_L_bar()[0]
+        
+        scaler.update_ema([torch.tensor(float('nan'))])
+        assert scaler.get_L_bar()[0] == initial_l_bar
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v", "--tb=short"])
+    import pytest
+    pytest.main([__file__, "-v"])
