@@ -34,11 +34,9 @@ class KendallWeighter(BaseWeighter):
         num_tasks: Number of tasks.
     """
 
-    def __init__(self, num_tasks: int, s_min: float = -2.0, **kwargs):
+    def __init__(self, num_tasks: int, **kwargs):
         super().__init__(num_tasks)
-        # [SOTA Fix] Lower-bounded manifold mapping to prevent negative loss drift
-        # s_min = -2.0 implies a minimum sigma^2 of ~0.135
-        self.s_min = s_min
+        # INTENTIONALLY unconstrained — this is the flaw we demonstrate
         self.log_vars = nn.Parameter(torch.zeros(num_tasks))
 
     def forward(
@@ -47,26 +45,21 @@ class KendallWeighter(BaseWeighter):
         shared_params: Optional[List[nn.Parameter]] = None,
         sync_ddp: bool = True,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        # Cast to fp32 for numerical safety under AMP
+        # Cast to fp32 for numerical safety under AMP (exp(11.1) overflows fp16)
         log_vars_fp32 = self.log_vars.float()
         losses_fp32 = losses.float()
         
-        # [SOTA Fix] Apply smooth lower bound to prevent s from drifting to -inf
-        # s_eff = softplus(s - s_min) + s_min
-        s_eff = torch.nn.functional.softplus(log_vars_fp32 - self.s_min) + self.s_min
-        
-        # Raw theoretical implicit weights
-        raw_precision = torch.exp(-s_eff)
-        
-        # Apply bounded precision to the loss
-        # [SOTA Fix] Manifold Average Alignment
-        # Standardizing scale to match Average Baseline and UWSO.
-        # This prevents the Bayesian regularizer from dominating in high-task regimes.
-        total = (0.5 * raw_precision * losses_fp32).sum() + (0.5 * s_eff).mean()
+        # [SOTA FIX: Liebel & Körner (2018) "Auxiliary Tasks in Multi-task Learning"]
+        # Replaces log(σ²) with log(1 + σ²) to guarantee total loss >= 0.
+        # This prevents uncertainty collapse and negative losses while preserving weighting semantics.
+        sigma_sq = torch.exp(log_vars_fp32).clamp(min=1e-8, max=1e8)  # [ry.md] robust bounds
+        weighted = 0.5 * losses_fp32 / sigma_sq
+        reg = torch.log(1.0 + sigma_sq)
+        total = (weighted + reg).sum()
         
         metrics = {}
         for i in range(self.num_tasks):
-            metrics[f"kendall/log_var_{i}"] = s_eff[i].item()
-            metrics[f"kendall/weight_{i}"] = (0.5 * raw_precision[i]).item()
+            metrics[f"kendall/log_var_{i}"] = self.log_vars[i]
+            metrics[f"kendall/weight_{i}"] = (0.5 / sigma_sq[i])
 
         return total, metrics

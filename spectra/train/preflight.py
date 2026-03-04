@@ -61,7 +61,7 @@ def preflight_check(cfg: DictConfig, output_dir: Path) -> None:
     if torch.cuda.is_available():
         free_mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
         batch_size  = cfg.train.get("batch_size", 8)
-        if benchmark == "nyuv2" and batch_size > 8 and free_mem_gb < 16.0:
+        if dataset_name == "nyuv2" and batch_size > 8 and free_mem_gb < 16.0:
             logger.warning(
                 f"[PreFlight] batch_size={batch_size} on {free_mem_gb:.1f}GB GPU. "
                 f"NYUv2/SegNet may OOM. Consider batch_size<=8 or train.accumulate_grad_batches=2."

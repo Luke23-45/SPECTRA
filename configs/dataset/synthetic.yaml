@@ -67,6 +67,9 @@ train:
   precision: "16-mixed"
   num_workers: 2
   log_every_n_steps: 50
+  early_stop: true
+  early_stop_patience: 10
+  early_stop_min_delta: 0.0001
 
 # ─── Data ────────────────────────────────────────────────────
 data:

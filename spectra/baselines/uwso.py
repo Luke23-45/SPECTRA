@@ -42,6 +42,7 @@ class UWSOWeighter(BaseWeighter):
 
     def __init__(self, num_tasks: int, ema_decay: float = 0.99, **kwargs):
         super().__init__(num_tasks)
+        self.temperature = kwargs.get("temperature", 1.0)  # SOTA default; tune 0.1–5.0
         self._ema_decay = ema_decay
         self.register_buffer("loss_ema", torch.ones(num_tasks))
         self.register_buffer("step_count", torch.tensor(0, dtype=torch.long))
@@ -67,26 +68,20 @@ class UWSOWeighter(BaseWeighter):
                 self.loss_ema.lerp_(losses_for_ema, 1.0 - self._ema_decay)
             self.step_count.add_(1)
 
-        # Analytical weights (NO learnable parameters)
-        ema_safe = self.loss_ema.detach().clamp(min=1e-6)
-        raw_weights = 1.0 / (2.0 * ema_safe ** 2 + 1e-8)
+        # [SOTA EXACT from Kirchdorfer et al. IJCV 2026 / arXiv:2408.07985]
+        # Analytical optimal + tempered softmax. NO regularizer → never negative.
+        losses = losses.clamp(min=0)  # [ry.md point 4] robust prevention for <0 task losses
+        losses_safe = losses.detach().clamp(min=1e-8)  # prevent div0 / inf
+        inv_losses = 1.0 / losses_safe
+        weights = torch.softmax(inv_losses / self.temperature, dim=0)  # sum(weights)=1
         
-        # [SOTA Fix] Gradient-Normalized Taming (Sum-to-1 Alignment)
-        # Prevents initial loss magnitude inflation. Rescales analytical weights
-        # such that they sum to 1.0, matching the standard averaging baseline.
-        weights = (raw_weights / (raw_weights.sum() + 1e-8)) * 1.0
-        
-        regularizer = torch.log(ema_safe + 1e-8)
-
-        # [SOTA Fix] Manifold Average Alignment
-        # We sum the precision-weighted losses (which sum to 1) and add the 
-        # mean regularizer. This ensures the total loss stays on the same
-        # scale as the 'Static' average baseline regardless of task count N.
-        total = (weights * losses).sum() + regularizer.mean()
+        # Total loss: convex combination of task losses.
+        # This mathematically guarantees total_loss >= min(losses) >= 0.
+        total = (weights * losses).sum()
 
         metrics = {}
         for i in range(self.num_tasks):
-            metrics[f"uwso/weight_{i}"] = weights[i]
-            metrics[f"uwso/loss_ema_{i}"] = self.loss_ema[i]
+            metrics[f"uwso/weight_{i}"] = weights[i].item()
+            metrics[f"uwso/loss_ema_{i}"] = self.loss_ema[i].item()
 
         return total, metrics
