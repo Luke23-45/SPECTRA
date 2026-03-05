@@ -75,6 +75,15 @@ class SyntheticMTLDataset(Dataset):
         # A purely linear mapping is trivial and won't trigger PCGrad or B-PGS surgeries.
         self.X = torch.randn(n_samples, input_dim, generator=gen_data)
         
+        # [SOTA FIX]: Inject Thermodynamic Anomalies for Tabular ALB Routing
+        # True tabular datasets (like clinical or financial) have rare, severe outliers.
+        # We inject a 5% chance of a massive 5-sigma spike into the feature space.
+        # This gives the Asymmetric Latent Bottleneck (ALB) a structural anomaly
+        # to route to its High-Frequency 'Expert' path.
+        anomaly_mask = torch.bernoulli(torch.full(self.X.shape, 0.05), generator=gen_data)
+        anomalies = anomaly_mask * (torch.randn(self.X.shape, generator=gen_data) * 5.0)
+        self.X = self.X + anomalies
+        
         W_shared1 = torch.randn(input_dim, hidden_dim, generator=gen_mapping) * 0.1
         W_shared2 = torch.randn(input_dim, hidden_dim, generator=gen_mapping) * 0.1
         

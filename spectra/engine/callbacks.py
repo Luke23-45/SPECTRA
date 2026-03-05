@@ -48,25 +48,54 @@ class SpectralMonitoringCallback(pl.Callback):
         if alb is None:
             return
 
-        p_ctx = getattr(alb, "last_planner_ctx", None)  # [B, D]
-        e_ctx = getattr(alb, "last_expert_ctx",  None)  # [B, D]
+        # Fetch sequence-level contexts (patched in v3.2 SOTA SQUID)
+        p_ctx = getattr(alb, "last_planner_ctx_seq", None)  
+        e_ctx = getattr(alb, "last_expert_ctx_seq", None)   
 
         if p_ctx is None or e_ctx is None:
+            return
+
+        # Handle T=1 Tabular/Synthetic Edge Case
+        if p_ctx.dim() == 3 and p_ctx.shape[1] == 1:
+            logger.info(
+                f"[Spectral-Audit] Epoch {trainer.current_epoch}: "
+                f"Skipping FFT analysis. Input is tabular/synthetic (T=1). "
+                f"High-frequency temporal separation is mathematically undefined for length-1 sequences."
+            )
             return
 
         # Detach and ensure fp32 for FFT stability
         p_ctx = p_ctx.detach().float().cpu()
         e_ctx = e_ctx.detach().float().cpu()
 
-        # 1D FFT over representation dimension (D axis)
-        p_fft = torch.fft.rfft(p_ctx, dim=-1).abs()  # [B, D//2+1]
-        e_fft = torch.fft.rfft(e_ctx, dim=-1).abs()
-
-        mid_bin = p_fft.shape[-1] // 2
-        p_low  = p_fft[..., :mid_bin].mean().item()
-        p_high = p_fft[..., mid_bin:].mean().item()
-        e_low  = e_fft[..., :mid_bin].mean().item()
-        e_high = e_fft[..., mid_bin:].mean().item()
+        if p_ctx.dim() == 3:
+            # 1D Temporal: [B, T, D]
+            # FFT over temporal dimension (dim=1)
+            p_fft = torch.fft.rfft(p_ctx, dim=1).abs()  # [B, T//2+1, D]
+            e_fft = torch.fft.rfft(e_ctx, dim=1).abs()
+            
+            # Average over channels and batch
+            p_fft = p_fft.mean(dim=(0, 2))  # [T//2+1]
+            e_fft = e_fft.mean(dim=(0, 2))
+            
+            mid = max(1, len(p_fft) // 2)
+            p_low, p_high = p_fft[:mid].mean().item(), p_fft[mid:].mean().item()
+            e_low, e_high = e_fft[:mid].mean().item(), e_fft[mid:].mean().item()
+        elif p_ctx.dim() == 4:
+            # 2D Spatial: [B, D, H, W]
+            p_fft = torch.fft.rfft2(p_ctx, dim=(2, 3)).abs() # [B, D, H, W//2+1]
+            e_fft = torch.fft.rfft2(e_ctx, dim=(2, 3)).abs()
+            
+            p_fft = p_fft.mean(dim=(0, 1)) # [H, W//2+1]
+            e_fft = e_fft.mean(dim=(0, 1))
+            
+            mid_h, mid_w = max(1, p_fft.shape[0] // 2), max(1, p_fft.shape[1] // 2)
+            p_low = p_fft[:mid_h, :mid_w].mean().item()
+            p_high = p_fft[mid_h:, mid_w:].mean().item()
+            e_low = e_fft[:mid_h, :mid_w].mean().item()
+            e_high = e_fft[mid_h:, mid_w:].mean().item()
+        else:
+            return
 
         p_hf_ratio = p_high / (p_low + 1e-8)
         e_hf_ratio = e_high / (e_low + 1e-8)

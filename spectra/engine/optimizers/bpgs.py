@@ -52,13 +52,19 @@ class BPGSEngine(OptimizationEngine):
         grad_clip = getattr(module.cfg.train, 'grad_clip', 0.0)
 
         # ── 1. Update EMA tracker (no grad required) ─────────────────────────
-        # Ensure robust coordinate-task alignment by gathering explicitly by name
-        unweighted_losses = [losses[name] for name in module.task_names]
-        module.weighter.update_ema(unweighted_losses)
+        # [SOTA FIX] OnlineTargetScaler Normalization Matching
+        # BPGS MUST track the normalized losses so that its variance
+        # measurement matches the exact scale of the network loss applied.
+        ema_losses = [losses[name] for name in module.task_names]
+        module.weighter.update_ema(ema_losses)
 
         # ── 2. Base Flow — Network weights ───────────────────────────────────
+        # CRITICAL: network_loss() MUST use the NORMALIZED losses (from the
+        # original computation graph) so gradients flow correctly through the
+        # model. Only update_ema() above uses the raw un-normalized losses.
         raw_opt_net.zero_grad()
-        loss_net = module.weighter.network_loss(unweighted_losses)
+        net_losses = [losses[name] for name in module.task_names]
+        loss_net = module.weighter.network_loss(net_losses)
 
         if scaler is not None:
             # Canonical PyTorch AMP: scale → backward → unscale → clip → step.
@@ -119,4 +125,16 @@ class BPGSEngine(OptimizationEngine):
         for key, val in module.weighter.get_task_stats().items():
             module.log(f'train/{key}', val, on_step=False, on_epoch=True, sync_dist=True)
 
-        return loss_net.detach()
+        # [INVERSION FIX] Log the BPGS precision-weighted loss as a SEPARATE
+        # diagnostic metric. This value rises as exp(-s_i) grows — expected
+        # and healthy, but NOT comparable to val/total_loss.
+        module.log('train/bpgs_weighted_loss', loss_net.detach(),
+                   on_step=False, on_epoch=True, sync_dist=True)
+
+        # [INVERSION FIX] Return UNWEIGHTED sum of task losses for logging
+        # parity with val/total_loss (which uses losses_tensor.sum()).
+        # The precision-weighted loss (loss_net) was already consumed by
+        # .backward() above — it is NOT the quantity to compare against
+        # validation loss, because its scale changes as BPGS adapts.
+        raw_loss_sum = sum(losses[name] for name in module.task_names).detach()
+        return raw_loss_sum

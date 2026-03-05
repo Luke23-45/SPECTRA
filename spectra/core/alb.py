@@ -72,6 +72,7 @@ class AsymmetricLatentBottleneck(nn.Module):
         n_heads: int = 8,
         dropout: float = 0.1,
         init_mode: str = "orthogonal",
+        expert_gain: float = 1.2,
     ):
         super().__init__()
         self.encoder = encoder
@@ -104,9 +105,9 @@ class AsymmetricLatentBottleneck(nn.Module):
 
         # Initialize expert weights
         if init_mode == "orthogonal":
-            self._init_expert_weights()
+            self._init_expert_weights(expert_gain)
 
-    def _init_expert_weights(self) -> None:
+    def _init_expert_weights(self, gain: float) -> None:
         """
         Orthogonal initialization with gain > 1.0 for expert branch.
 
@@ -118,21 +119,21 @@ class AsymmetricLatentBottleneck(nn.Module):
         for module in [self.expert_proj, self.lateral_bypass, self.expert_self_attn]:
             for m in module.modules():
                 if isinstance(m, nn.Linear):
-                    nn.init.orthogonal_(m.weight, gain=1.2)
+                    nn.init.orthogonal_(m.weight, gain=gain)
                     if m.bias is not None:
                         nn.init.zeros_(m.bias)
                 elif isinstance(m, (nn.Conv1d, nn.Conv2d)):
-                    nn.init.orthogonal_(m.weight, gain=1.2)
+                    nn.init.orthogonal_(m.weight, gain=gain)
                     if m.bias is not None:
                         nn.init.zeros_(m.bias)
                 elif isinstance(m, nn.MultiheadAttention):
                     # For MHA, the in_proj_weight concatenates Q, K, V
                     if m.in_proj_weight is not None:
-                        nn.init.orthogonal_(m.in_proj_weight, gain=1.2)
+                        nn.init.orthogonal_(m.in_proj_weight, gain=gain)
                     if m.in_proj_bias is not None:
                         nn.init.zeros_(m.in_proj_bias)
                     if m.out_proj.weight is not None:
-                        nn.init.orthogonal_(m.out_proj.weight, gain=1.2)
+                        nn.init.orthogonal_(m.out_proj.weight, gain=gain)
                     if m.out_proj.bias is not None:
                         nn.init.zeros_(m.out_proj.bias)
 
@@ -222,12 +223,17 @@ class AsymmetricLatentBottleneck(nn.Module):
         else:
             global_expert = ctx_expert.max(dim=1)[0]  # [B, D]
 
+        # [v3.2 Spec] Cache for Spectral Monitoring Callback
+        # SOTA FIX: Cache unpooled sequence lengths for true temporal FFTs
+        self.last_planner_ctx_seq = ctx_planner.detach()
+        self.last_expert_ctx_seq = ctx_expert.detach()
+
         # Auto-squeeze back if input was 2D tabular
         if squeezed:
             ctx_planner = ctx_planner.squeeze(1)  # [B, 1, D] → [B, D]
             ctx_expert = ctx_expert.squeeze(1)     # [B, 1, D] → [B, D]
 
-        # [v3.2 Spec] Cache for Spectral Monitoring Callback
+        # Legacy global caches to prevent existing code breaking
         self.last_planner_ctx = global_planner.detach()
         self.last_expert_ctx = global_expert.detach()
 
@@ -315,8 +321,11 @@ class SpatialALB(nn.Module):
         # flow from the expert branch back into the trunk, violating gradient divorce.
         ctx_expert = x_detached + (gate_map * expert_res)
 
-        # [v3.2 Spec] Cache for Spectral Monitoring Callback (Spatial Mean Pool)
-        # Note: We pool to [B, D] to allow 1D FFT over the representation dim.
+        # [v3.2 Spec] Cache for Spectral Monitoring Callback
+        self.last_planner_ctx_seq = x_trunk.detach()
+        self.last_expert_ctx_seq = ctx_expert.detach()
+        
+        # Legacy
         self.last_planner_ctx = x_trunk.mean(dim=(2, 3)).detach()
         self.last_expert_ctx = ctx_expert.mean(dim=(2, 3)).detach()
 

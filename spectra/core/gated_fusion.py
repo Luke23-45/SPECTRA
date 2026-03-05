@@ -191,13 +191,31 @@ class MultiScaleInceptionBlock(nn.Module):
         """
         identity = self.res(x)
 
-        # Parallel multi-scale paths
-        out = torch.cat([
-            self.branch_3(x),
-            self.branch_5(x),
-            self.branch_7(x),
-            self.branch_pool(x),
-        ], dim=1)  # [B, mid*4, T]
+        # [SOTA FIX]: Tabular ALB (T=1). Bypass temporal convolutions entirely.
+        if x.shape[-1] == 1:
+            # Instead of 4 parallel branches that dilute energy with zeros, 
+            # we run 4 independent 1x1 dense projections using the center weights 
+            # of the existing convolutional filters, scaled up to preserve energy.
+            w3, b3 = self.branch_3[0].weight[:, :, 1:2], self.branch_3[0].bias
+            w5, b5 = self.branch_5[0].weight[:, :, 2:3], self.branch_5[0].bias
+            w7, b7 = self.branch_7[0].weight[:, :, 3:4], self.branch_7[0].bias
+            w_pool, b_pool = self.branch_pool[1].weight, self.branch_pool[1].bias
+            
+            # Scale gain to compensate for lost weights to prevent thermal death
+            out_3 = self.branch_3[2](self.branch_3[1](F.conv1d(x, w3 * (3**0.5), b3)))
+            out_5 = self.branch_5[2](self.branch_5[1](F.conv1d(x, w5 * (5**0.5), b5)))
+            out_7 = self.branch_7[2](self.branch_7[1](F.conv1d(x, w7 * (7**0.5), b7)))
+            out_pool = self.branch_pool[3](self.branch_pool[2](F.conv1d(x, w_pool, b_pool)))
+            
+            out = torch.cat([out_3, out_5, out_7, out_pool], dim=1)
+        else:
+            # Parallel multi-scale paths
+            out = torch.cat([
+                self.branch_3(x),
+                self.branch_5(x),
+                self.branch_7(x),
+                self.branch_pool(x),
+            ], dim=1)  # [B, mid*4, T]
 
         # Squeeze-Excitation recalibration
         out = self.se(out)
@@ -254,6 +272,11 @@ class VolatilityAwareGate(nn.Module):
             nn.Linear(1, d_model),
             nn.SiLU(),
         )
+        # [SOTA FIX]: Tabular 0D Energy Projection
+        self.tabular_energy_proj = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.SiLU(),
+        )
 
     def forward(
         self,
@@ -273,13 +296,21 @@ class VolatilityAwareGate(nn.Module):
         # Temporal volatility: |x_t - x_{t-1}|
         # [SOTA FIX]: Prevent T=1 degeneracy where |x_0 - 0| equals arbitrary magnitude.
         if raw_input.shape[1] == 1:
-            delta = torch.zeros(raw_input.shape[0], 1, 1, device=raw_input.device)
+            # TABULAR ALB: Compute Thermodynamic Energy Deviation instead of Temporal Delta
+            # This isolates structurally anomalous tabular features (hot spots)
+            mu_instance = raw_ctx.mean(dim=-1, keepdim=True)
+            energy_dev = (raw_ctx - mu_instance).abs()  # [B, 1, D]
+            
+            # Map [B, 1, D] energy vector to [B, 1, D] gate influence
+            if hasattr(self, 'tabular_energy_proj'):
+                vol_embed = self.tabular_energy_proj(energy_dev)
+            else:
+                vol_embed = torch.zeros_like(raw_ctx)
         else:
             x_shifted = F.pad(raw_input[:, :-1, :], (0, 0, 1, 0))
             delta = (raw_input - x_shifted).abs().mean(dim=-1, keepdim=True)  # [B, T, 1]
-
-        # Per-channel volatility embedding
-        vol_embed = self.volatility_proj(delta)  # [B, T, D]
+            # Per-channel volatility embedding
+            vol_embed = self.volatility_proj(delta)  # [B, T, D]
 
         # Semantic gate from feature concatenation
         combined = torch.cat([smooth_ctx, raw_ctx], dim=-1)  # [B, T, 2D]

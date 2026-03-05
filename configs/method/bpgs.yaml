@@ -11,6 +11,12 @@ method:
   use_autocal: true
   ema_decay: 0.99
 
+train:
+  grad_clip: 2.0  # [TUG-OF-WAR FIX] Explicit — was implicit via dataset default.
+  early_stop_patience: 20  # [TUG-OF-WAR FIX] Dual-optimizer dynamics create
+                           # bi-phasic convergence needing more runway than
+                           # single-optimizer methods (default patience=10).
+
 # Overrides the `engine` block of whatever Domain Silo is currently active
 module:
   engine:

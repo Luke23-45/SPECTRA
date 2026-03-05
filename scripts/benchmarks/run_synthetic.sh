@@ -31,7 +31,7 @@ NC='\033[0m'   # No Colour / reset
 # Configuration  (mirror the PowerShell variables exactly)
 # --------------------------------------------------------------
 METHODS=("static" "kendall" "uwso" "ntkmtl" "pcgrad" "bpgs" "bpgs_alb")
-EPOCHS=100
+EPOCHS=80
 DATASET="synthetic"
 
 # --------------------------------------------------------------

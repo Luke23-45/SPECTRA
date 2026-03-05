@@ -7,7 +7,11 @@ from omegaconf import OmegaConf
 # Path injection
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from spectra.engine.trainer import SPECTRAModule
+from spectra.modules.clinical import ClinicalSPECTRAModule
+from spectra.modules.vision import VisionSPECTRAModule
+from spectra.engine.optimizers.pcgrad import PCGradEngine
+from spectra.engine.optimizers.bpgs import BPGSEngine
+from spectra.engine.optimizers.standard import StandardEngine
 
 # =========================================================================
 # NASA-Tier Architecture Simulator
@@ -124,7 +128,18 @@ def run_suite():
         
         try:
             cfg = get_base_cfg(w_name, use_alb, d_type)
-            model = SPECTRAModule(cfg)
+            
+            if w_name in ("bpgs", "bpgs_alb"):
+                engine = BPGSEngine()
+            elif w_name == "pcgrad":
+                engine = PCGradEngine()
+            else:
+                engine = StandardEngine()
+                
+            if d_type == "clinical":
+                model = ClinicalSPECTRAModule(cfg, engine)
+            else:
+                model = VisionSPECTRAModule(cfg, engine)
             model.trainer = MockTrainer()
             
             # Mock Logger & Manual Backward

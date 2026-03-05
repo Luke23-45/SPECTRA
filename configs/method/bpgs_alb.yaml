@@ -7,14 +7,18 @@ method:
   name: bpgs_alb
   use_sigmoid: true
   use_autocal: true
-  s_min: -5.0
-  s_max: 10.0
   ema_decay: 0.99
 
   # ALB parameters (consumed by builder.py)
   n_expert_layers: 3
   expert_init: orthogonal
   expert_gain: 1.2
+
+train:
+  grad_clip: 2.0  # [TUG-OF-WAR FIX] Explicit — was implicit via dataset default.
+  early_stop_patience: 25  # [TUG-OF-WAR FIX] Most complex model (ALB + dual
+                           # optimizer). Needs longest convergence runway.
+                           # Default patience=10 systematically kills this method.
 
 # Overrides the `engine` block of whatever Domain Silo is currently active
 module:

@@ -41,6 +41,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 
 
 # ============================================================================
@@ -217,6 +218,8 @@ class BPGS(nn.Module):
         s_init:     float          =  0.0,
         eps_clip:   float          =  1e-8,
         prior_var:  Optional[float] = None,
+        use_autocal: bool          =  False,
+        autocal_margin: float      =  10.0,
     ) -> None:
         super().__init__()
 
@@ -274,11 +277,16 @@ class BPGS(nn.Module):
         # (needed for extra_repr, serialization, and downstream use)          #
         # ------------------------------------------------------------------ #
         self.num_tasks:  int            = int(num_tasks)
-        self.s_min:      float          = float(s_min)
-        self.s_max:      float          = float(s_max)
         self.tau:        float          = float(tau)
         self.eps:        float          = float(eps)
         self.prior_var:  Optional[float] = float(prior_var) if prior_var is not None else None
+        
+        self.use_autocal: bool = bool(use_autocal)
+        self.autocal_margin: float = float(autocal_margin)
+
+        # Fallbacks for extra_repr and manual overriding
+        self.s_min_fallback: float = float(s_min)
+        self.s_max_fallback: float = float(s_max)
 
         # ------------------------------------------------------------------ #
         # Exact EMA discrete integrator constant                              #
@@ -296,11 +304,19 @@ class BPGS(nn.Module):
         # s_init exactly, with eps_clip preventing ±inf at the boundaries.    #
         # ------------------------------------------------------------------ #
         theta_init_val: float = _safe_logit(
-            float(s_init), self.s_min, self.s_max, float(eps_clip)
+            float(s_init), self.s_min_fallback, self.s_max_fallback, float(eps_clip)
         )
         self.theta = nn.Parameter(
             torch.full((self.num_tasks,), theta_init_val, dtype=torch.float32)
         )
+
+        # ------------------------------------------------------------------ #
+        # Per-task geometric bounds for the log-variance manifold.            #
+        # Replaces scalar properties to allow Auto-Calibration per task.      #
+        # ------------------------------------------------------------------ #
+        self.register_buffer("s_min_v", torch.full((self.num_tasks,), self.s_min_fallback, dtype=torch.float32))
+        self.register_buffer("s_max_v", torch.full((self.num_tasks,), self.s_max_fallback, dtype=torch.float32))
+        self.register_buffer("is_calibrated", torch.zeros(self.num_tasks, dtype=torch.bool))
 
         # ------------------------------------------------------------------ #
         # Smoothed EMA loss buffer L_bar                                      #
@@ -350,7 +366,7 @@ class BPGS(nn.Module):
             List of num_tasks scalar tensors, each carrying grad through theta_i.
         """
         # Batched sigmoid: one CUDA kernel call, not num_tasks separate calls
-        s_vec = self.s_min + (self.s_max - self.s_min) * torch.sigmoid(self.theta)
+        s_vec = self.s_min_v + (self.s_max_v - self.s_min_v) * torch.sigmoid(self.theta)
         # Return list of 0-dim views so grad flows per-task
         return [s_vec[i] for i in range(self.num_tasks)]
 
@@ -392,16 +408,34 @@ class BPGS(nn.Module):
             )
 
         with torch.no_grad():
-            for i, loss_i in enumerate(losses):
-                if not isinstance(loss_i, torch.Tensor):
+            # [SOTA FIX] Distributed Training Parameter Safety.
+            # Auto-calibration modifies parameters (theta) and buffers (s_min_v).
+            # If local batches differ across ranks, ranks will initialize to
+            # different values, permanently breaking DDP synchronization.
+            # We strictly synchronize the loss values across ranks during calibration.
+            sync_needed = False
+            if self.use_autocal and dist.is_available() and dist.is_initialized():
+                if not self.is_calibrated.all().item():
+                    sync_needed = True
+
+            if sync_needed:
+                stacked_losses = torch.stack([l.detach() for l in losses])
+                dist.all_reduce(stacked_losses, op=dist.ReduceOp.SUM)
+                stacked_losses = stacked_losses / dist.get_world_size()
+                losses_to_use = list(stacked_losses)
+            else:
+                losses_to_use = [l.detach() for l in losses]
+
+            for i, loss_det in enumerate(losses_to_use):
+                if not isinstance(loss_det, torch.Tensor):
                     raise TypeError(
                         f"losses[{i}] must be a torch.Tensor; "
-                        f"got {type(loss_i).__name__!r}. "
+                        f"got {type(loss_det).__name__!r}. "
                         f"Do not pass Python floats directly."
                     )
                 # Detach: we must never touch the gradient graph here
-                loss_det = loss_i.detach()
-
+                # (already detached above, but explicitly re-assigning for clarity)
+                
                 # NaN Gate: torch.isfinite on a 0-dim tensor returns a 0-dim
                 # bool tensor. .item() converts it to a Python bool explicitly
                 # and safely — no ambiguity about truthiness of tensors.
@@ -414,11 +448,19 @@ class BPGS(nn.Module):
                 
                 # Use raw loss (do not normalize by global sum, to preserve task difficulty signal)
                 loss_val: float = loss_val_raw
-                
                 old_val:  float = self.L_bar[i].item()
 
-                # Exact discrete integrator (eliminates Euler lag bias)
-                new_val: float = old_val + self.beta * (loss_val - old_val)
+                if self.use_autocal and not self.is_calibrated[i].item():
+                    # First valid batch: hard-anchor to initial loss and center bounds
+                    new_val = loss_val
+                    base_s = math.log(math.sqrt(new_val**2 + self.eps**2))
+                    self.s_min_v[i] = base_s - self.autocal_margin
+                    self.s_max_v[i] = base_s + self.autocal_margin
+                    self.theta.data[i] = 0.0  # Center sigmoid mapping
+                    self.is_calibrated[i] = True
+                else:
+                    # Exact discrete integrator (eliminates Euler lag bias)
+                    new_val = old_val + self.beta * (loss_val - old_val)
 
                 # Write back into the buffer using __setitem__.
                 self.L_bar[i] = new_val
@@ -576,7 +618,7 @@ class BPGS(nn.Module):
         Intended for logging and monitoring. No gradient tracking.
         """
         with torch.no_grad():
-            s_vec = self.s_min + (self.s_max - self.s_min) * torch.sigmoid(self.theta)
+            s_vec = self.s_min_v + (self.s_max_v - self.s_min_v) * torch.sigmoid(self.theta)
             return [math.exp(-float(v)) for v in s_vec.tolist()]
 
     def get_log_vars(self) -> list[float]:
@@ -589,7 +631,7 @@ class BPGS(nn.Module):
         Intended for logging and monitoring. No gradient tracking.
         """
         with torch.no_grad():
-            s_vec = self.s_min + (self.s_max - self.s_min) * torch.sigmoid(self.theta)
+            s_vec = self.s_min_v + (self.s_max_v - self.s_min_v) * torch.sigmoid(self.theta)
             return s_vec.tolist()
 
     def get_L_bar(self) -> list[float]:
@@ -613,7 +655,7 @@ class BPGS(nn.Module):
             Dictionary mapping 'category_taskidx' to scalar float values.
         """
         with torch.no_grad():
-            s_vec = self.s_min + (self.s_max - self.s_min) * torch.sigmoid(self.theta)
+            s_vec = self.s_min_v + (self.s_max_v - self.s_min_v) * torch.sigmoid(self.theta)
             s_list = s_vec.tolist()
             weights = [math.exp(-v) for v in s_list]
             l_bar = self.L_bar.tolist()
@@ -668,8 +710,9 @@ class BPGS(nn.Module):
         )
         return (
             f"num_tasks={self.num_tasks}, "
-            f"s_min={self.s_min}, "
-            f"s_max={self.s_max}, "
+            f"autocal={self.use_autocal}, "
+            f"s_min={self.s_min_fallback}, "
+            f"s_max={self.s_max_fallback}, "
             f"tau={self.tau}, "
             f"beta={self.beta:.6f}, "
             f"eps={self.eps}"

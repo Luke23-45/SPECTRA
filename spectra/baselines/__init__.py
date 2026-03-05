@@ -41,7 +41,9 @@ def build_weighter(cfg):
             tau=tau,
             eps=m_cfg.get("eps", 1e-5),
             s_init=m_cfg.get("s_init", 0.0),
-            prior_var=m_cfg.get("prior_var", None)
+            prior_var=m_cfg.get("prior_var", None),
+            use_autocal=m_cfg.get("use_autocal", False),
+            autocal_margin=m_cfg.get("autocal_margin", 10.0)
         )
     
     cls = WEIGHTER_REGISTRY.get(name)

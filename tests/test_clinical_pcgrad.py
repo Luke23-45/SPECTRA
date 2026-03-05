@@ -8,7 +8,8 @@ from torch.utils.data import DataLoader
 from omegaconf import OmegaConf
 
 from tqdm import tqdm
-from spectra.engine.trainer import SPECTRAModule
+from spectra.modules.clinical import ClinicalSPECTRAModule
+from spectra.engine.optimizers.pcgrad import PCGradEngine
 from spectra.data.clinical.dataset import ICUTrajectoryDataset
 
 def test_clinical_pcgrad():
@@ -56,7 +57,8 @@ def test_clinical_pcgrad():
     val_loader = DataLoader(val_ds, batch_size=64, shuffle=False, num_workers=0)
     
     # 3. Instantiate Module
-    model = SPECTRAModule(cfg)
+    engine = PCGradEngine()
+    model = ClinicalSPECTRAModule(cfg, engine)
     
     # 4. Custom Callback for Terminal Logging
     class TQDMProgressBar(pl.Callback):

@@ -7,7 +7,8 @@ import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 from omegaconf import OmegaConf
 
-from spectra.engine.trainer import SPECTRAModule
+from spectra.modules.synthetic import SyntheticSPECTRAModule
+from spectra.engine.optimizers.pcgrad import PCGradEngine
 from spectra.data.synthetic import SyntheticMTLDataset
 
 def main():
@@ -56,8 +57,8 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=SyntheticMTLDataset.collate_fn)
     val_loader = DataLoader(val_ds, batch_size=32, shuffle=False, collate_fn=SyntheticMTLDataset.collate_fn)
     
-    # 3. Instantiate Module
-    model = SPECTRAModule(cfg)
+    engine = PCGradEngine()
+    model = SyntheticSPECTRAModule(cfg, engine)
     
     class PrintLossCallback(pl.Callback):
         def on_train_epoch_end(self, trainer, pl_module):
