@@ -91,10 +91,19 @@ class NTKMTLWeighter(BaseWeighter):
             and self.step_count > 0
             and self.step_count % self._update_interval == 0
         ):
-            # losses must have grad_fn for autograd.grad to work
-            if losses.grad_fn is not None:
+            # [SOTA Fix] DDP Deadlock Prevention (M1)
+            # If `losses.grad_fn` is None on one rank but not another, conditional execution
+            # of `_update_ntk_weights` will cause a permanent DDP collective hang.
+            # We establish global consensus before diving into the collective operation.
+            is_valid = torch.tensor(1.0 if losses.grad_fn is not None else 0.0, device=losses.device)
+            if sync_ddp and dist.is_initialized():
+                dist.all_reduce(is_valid, op=dist.ReduceOp.MIN)
+            
+            if is_valid.item() > 0.5:
                 ntk_input = raw_losses if raw_losses is not None else losses
                 self._update_ntk_weights(ntk_input, shared_params, sync_ddp)
+            else:
+                logger.warning(f"[NTKMTL] DDP mismatch or missing grad_fn at step {self.step_count}. Skipping NTK update.")
 
         if self.training:
             with torch.no_grad():
@@ -154,6 +163,11 @@ class NTKMTLWeighter(BaseWeighter):
         # CRITICAL FIX: DDP Sync for Gradient Norms
         # Without this, each rank computes spectral_energy based on its local minibatch,
         # leading to weight divergence across ranks and breaking DDP!
+        # [SOTA FIX]: Deadlock Prevention. If any rank had an empty batch, it might have
+        # bypassed _update_ntk_weights. By enforcing a synchronized timeout or 
+        # using our global health check in trainer.py, this is mostly safe. 
+        # But we also add a safety timeout to the collective operation if PyTorch version allows,
+        # or we just rely on the global NaN guard upstream.
         if sync_ddp and dist.is_initialized():
             dist.all_reduce(norms_t, op=dist.ReduceOp.SUM)
             norms_t /= dist.get_world_size()

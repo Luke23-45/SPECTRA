@@ -157,13 +157,26 @@ class GradientHealthCallback(pl.Callback):
             mean_grad_weight_ratio = sum(ratios) / len(ratios)
             
             # [SOTA Fix] Actual update scales with the learning rate!
-            optimizers = getattr(pl_module, "optimizers", lambda: None)()
-            if optimizers is not None:
-                opts = optimizers if isinstance(optimizers, list) else [optimizers]
-                current_lr = opts[0].param_groups[0].get("lr", 1e-3)
-            else:
-                current_lr = 1e-3
-                
+            # M3 Patch/NASA-Grade: Multi-Parameter-Group LR Averaging
+            # Safely extract mean LR across all param groups whether Automatic or Manual.
+            current_lr = 1e-3
+            try:
+                optimizers = getattr(pl_module, "optimizers", lambda: None)()
+                if optimizers is not None:
+                    opts = optimizers if isinstance(optimizers, list) else [optimizers]
+                    lrs = []
+                    for opt in opts:
+                        # Unwrap LightningOptimizer if necessary
+                        opt_inner = opt.optimizer if hasattr(opt, "optimizer") else opt
+                        if hasattr(opt_inner, "param_groups"):
+                            for pg in opt_inner.param_groups:
+                                if "lr" in pg:
+                                    lrs.append(pg["lr"])
+                    if lrs:
+                        current_lr = sum(lrs) / len(lrs)
+            except Exception as e:
+                pass # Silently fallback to 1e-3 if extraction fails
+
             true_update_ratio = mean_grad_weight_ratio * current_lr
             pl_module.log("health/update_weight_ratio", true_update_ratio, sync_dist=False, prog_bar=False)
 

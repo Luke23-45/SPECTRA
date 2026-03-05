@@ -46,21 +46,51 @@ def build_model(cfg: DictConfig) -> nn.Module:
                 self.alb = None
 
             self.heads = nn.ModuleDict()
+            # Store per-task manifold assignments for ALB routing
+            self._task_manifolds = {}
             for task_cfg in cfg.tasks:
                 d_head = cfg.get("d_model") or cfg.get("model", {}).get("d_model")
-                if self.use_alb and task_cfg.get("manifold", "planner") == "both":
+                manifold = task_cfg.get("manifold", "planner")
+                self._task_manifolds[task_cfg.name] = manifold
+                if self.use_alb and manifold == "both":
                     d_head = (cfg.get("d_model") or cfg.get("model", {}).get("d_model")) * 2
                 self.heads[task_cfg.name] = build_head(task_cfg, d_head)
 
         def forward(self, x):
-            features = self.backbone(x)
             if self.alb is not None:
-                features = self.alb(features)
+                # ALB internally wraps the backbone (self.encoder = backbone).
+                # Raw input goes directly to ALB, which runs backbone internally,
+                # then produces the decoupled planner + expert manifolds.
+                features = self.alb(x)
 
-            outputs = {}
-            for name, head in self.heads.items():
-                outputs[name] = head(features)
-            return outputs
+                # Manifold-Aware Head Routing (Core of Spectral Decoupling)
+                # Each task head receives features from its designated manifold:
+                #   - "planner": smooth, low-freq features (generative tasks like MSE)
+                #   - "expert":  sharp, high-freq features (discriminative tasks like BCE)
+                #   - "both":    concatenated [planner || expert] (hybrid tasks)
+                f_planner = features.get("planner")
+                f_expert = features.get("expert")
+                if f_planner is None:
+                    f_planner = next(iter(features.values()))
+                if f_expert is None:
+                    f_expert = f_planner
+
+                outputs = {}
+                for name, head in self.heads.items():
+                    manifold = self._task_manifolds.get(name, "planner")
+                    if manifold == "expert":
+                        outputs[name] = head(f_expert)
+                    elif manifold == "both":
+                        outputs[name] = head(torch.cat([f_planner, f_expert], dim=-1))
+                    else:  # "planner" (default)
+                        outputs[name] = head(f_planner)
+                return outputs
+            else:
+                features = self.backbone(x)
+                outputs = {}
+                for name, head in self.heads.items():
+                    outputs[name] = head(features)
+                return outputs
 
     return DynamicWrapper(cfg)
 

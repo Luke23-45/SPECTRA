@@ -361,6 +361,21 @@ class SPECTRAModule(pl.LightningModule):
 
         losses_tensor = torch.stack(weighted_task_loss_list)
 
+        # [SOTA Fix] DDP NaN/Inf Deadlock & Corruption Guard [NASA-Grade Refinement]
+        # If any rank in DDP hits a NaN OR Inf loss, it poisons the collective `dist.all_reduce`
+        # in manual optimization, or causes a deadlock if ranks diverge execution paths.
+        # using `isfinite().all()` instead of `isnan().any()` ensures we catch positive/negative infinity.
+        batch_health = torch.tensor(1.0 if torch.isfinite(losses_tensor).all() else 0.0, device=self.device)
+        if self.trainer.world_size > 1 and dist.is_initialized():
+            dist.all_reduce(batch_health, op=dist.ReduceOp.MIN)
+        
+        if batch_health.item() < 1.0:
+            logger.warning(f"[Step {self.global_step}] NaN/Inf loss detected cross-rank. Skipping toxic batch cleanly.")
+            # Clear grads to prevent stale accumulations from the partial backward (if any)
+            for opt in (self.optimizers() if isinstance(self.optimizers(), list) else [self.optimizers()]):
+                opt.zero_grad()
+            return None if (self.is_pcgrad or self.is_bpgs) else torch.tensor(0.0, device=self.device, requires_grad=True)
+
         # ─── PCGrad SOTA: Manual Optimization & Surgery ────────────────
         if self.is_pcgrad:
             opt = self.optimizers()
@@ -584,9 +599,10 @@ class SPECTRAModule(pl.LightningModule):
                 sync_ddp=self.trainer.world_size > 1 if self.trainer else False,
             )
 
-        # NaN guard
+        # The global cross-rank NaN guard above prevents toxic batches from reaching here,
+        # but we maintain a local check for automatic optimization safety.
         if torch.isnan(total_loss):
-            logger.warning(f"[Step {self.global_step}] NaN loss detected — skipping batch")
+            logger.warning(f"[Step {self.global_step}] NaN loss detected (Local) — skipping batch")
             if self.is_pcgrad:
                 return None
             return torch.tensor(0.0, device=self.device, requires_grad=True)

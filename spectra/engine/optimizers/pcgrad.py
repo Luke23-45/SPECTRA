@@ -81,6 +81,9 @@ class PCGradEngine(OptimizationEngine):
                         if g is not None:
                             p.grad = g
 
+            # 4. Unscale ALL gradients (backbone + heads) uniformly
+            scaler.unscale_(raw_opt)
+
             # [SOTA Fix] DDP Explicit Synchronization
             # Because `autograd.grad` bypasses DDP's `backward()` hooks, PCGrad
             # gradients are purely local. If we don't manually all-reduce them,
@@ -89,9 +92,6 @@ class PCGradEngine(OptimizationEngine):
                 for p in module.parameters():
                     if p.grad is not None:
                         torch.distributed.all_reduce(p.grad, op=torch.distributed.ReduceOp.AVG)
-
-            # 4. Unscale ALL gradients (backbone + heads) uniformly
-            scaler.unscale_(raw_opt)
 
             # 5. Gradient clipping
             if module.cfg.train.get("grad_clip", 0) > 0:

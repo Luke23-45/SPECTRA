@@ -10,7 +10,10 @@ import torch.nn as nn
 import pytorch_lightning as pl
 from omegaconf import DictConfig
 from typing import Dict, Any
+import logging
 from torchmetrics import AUROC, AveragePrecision, Recall, Accuracy
+
+logger = logging.getLogger(__name__)
 
 from spectra.modules.base import OrthogonalSPECTRAModule
 from spectra.engine.optimizers import OptimizationEngine
@@ -154,8 +157,14 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
 
     def on_train_epoch_end(self) -> None:
         for name, metric in self.train_metrics.items():
-            if metric._update_count > 0:
-                self.log(f"train/{name.split('_')[1].upper()}", metric.compute(), prog_bar=True, sync_dist=True)
+            # [SOTA Fix] Torchmetrics Durability (M2) [NASA-Grade Refinement]
+            # Replacing brittle internal `_update_count` check with safe compute attempt.
+            try:
+                val = metric.compute()
+                self.log(f"train/{name.split('_')[1].upper()}", val, prog_bar=True, sync_dist=True)
+            except (RuntimeError, ValueError) as getattr_err:
+                logger.debug(f"[Epoch {self.current_epoch}] Metric {name} skipped: No positive samples or no updates.") 
+            finally:
                 metric.reset()
 
     def validation_step(self, batch: Dict, batch_idx: int) -> None:
@@ -186,29 +195,14 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
                 self._val_metrics[f"{name}_acc"].update(pred, target)
 
         losses_tensor = torch.stack(weighted_task_loss_list)
-        # Re-extracting unweighted losses for validation
-        unweighted_losses = []
-        for name in self.task_names:
-            pred = predictions[name]
-            target = targets[name]
-            if pred.dim() <= 2 and target.dim() <= 2:
-                if pred.dim() > target.dim(): pred = pred.squeeze(-1)
-                if target.dim() > pred.dim(): target = target.squeeze(-1)
-            unweighted_losses.append(self.task_losses[name](pred, target))
-        raw_losses_tensor = torch.stack(unweighted_losses)
 
-        if self.is_pcgrad:
-            total_val_loss = losses_tensor.sum()
-        else:
-            shared_params = list(self.backbone.parameters())
-            if self.use_alb:
-                shared_params += list(self.alb.parameters())
-            total_val_loss, _ = self.weighter(
-                losses_tensor,
-                shared_params=shared_params,
-                sync_ddp=self.trainer.world_size > 1 if getattr(self, "trainer", None) else False,
-                raw_losses=raw_losses_tensor,
-            )
+        # CRITICAL: val/total_loss must NOT pass through the uncertainty weighter.
+        # KendallWeighter.forward() injects training-evolved σ as precision weights.
+        # As σ shrinks during training, 0.5/σ² grows even when task losses improve —
+        # causing val/total_loss to rise while the model gets better, which corrupts
+        # the early stopping signal.
+        # Plain weighted sum is scale-consistent across all epochs and all methods.
+        total_val_loss = losses_tensor.sum()
 
         self.log("val/total_loss", total_val_loss, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
 

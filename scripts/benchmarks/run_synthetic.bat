@@ -8,7 +8,7 @@ setlocal enabledelayedexpansion
 :: Synthetic dataset across all six core multi-task learning baselines. 
 :: ========================================================================
 
-set METHODS=static kendall uwso ntkmtl pcgrad bpgs
+set METHODS=static kendall uwso ntkmtl pcgrad bpgs bpgs_alb
 set EPOCHS=100
 set DATASET=synthetic
 

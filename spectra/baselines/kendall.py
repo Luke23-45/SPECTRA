@@ -50,17 +50,17 @@ class KendallWeighter(BaseWeighter):
         log_vars_fp32 = self.log_vars.float()
         losses_fp32 = losses.float()
         
-        # [SOTA FIX: Liebel & Körner (2018) "Auxiliary Tasks in Multi-task Learning"]
-        # Replaces log(σ²) with log(1 + σ²) to guarantee total loss >= 0.
-        # This prevents uncertainty collapse and negative losses while preserving weighting semantics.
-        sigma_sq = torch.exp(log_vars_fp32).clamp(min=1e-8, max=1e8)  # [ry.md] robust bounds
-        weighted = 0.5 * losses_fp32 / sigma_sq
-        reg = torch.log(1.0 + sigma_sq)
+        # Kendall et al. 2018 (CVPR), Eq. 2:
+        #   L = Σ [ 0.5·exp(-sᵢ)·Lᵢ + 0.5·sᵢ ]   where sᵢ = log(σᵢ²)
+        # Regularizer ∂(0.5·s)/∂s = 0.5 (constant) → equilibrium at sᵢ* = log(Lᵢ).
+        # Negative total is valid and expected when sᵢ < 0; it is not an error.
+        weighted = 0.5 * torch.exp(-log_vars_fp32) * losses_fp32
+        reg = 0.5 * log_vars_fp32
         total = (weighted + reg).sum()
         
         metrics = {}
         for i in range(self.num_tasks):
             metrics[f"kendall/log_var_{i}"] = self.log_vars[i]
-            metrics[f"kendall/weight_{i}"] = (0.5 / sigma_sq[i])
+            metrics[f"kendall/weight_{i}"] = 0.5 * torch.exp(-self.log_vars[i])
 
         return total, metrics

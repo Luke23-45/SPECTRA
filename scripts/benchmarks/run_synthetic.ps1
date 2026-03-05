@@ -14,8 +14,8 @@ across all six core multi-task learning baselines.
 
 $ErrorActionPreference = "Stop"
 
-$METHODS = @("static", "kendall", "uwso", "ntkmtl", "pcgrad", "bpgs")
-$EPOCHS = 10
+$METHODS = @("static", "kendall", "uwso", "ntkmtl", "pcgrad", "bpgs", "bpgs_alb")
+$EPOCHS = 100
 $DATASET = "synthetic"
 
 Write-Host "============================================================" -ForegroundColor Cyan

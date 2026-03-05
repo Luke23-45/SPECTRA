@@ -146,19 +146,30 @@ class AsymmetricLatentBottleneck(nn.Module):
         Produces decoupled planner (low-freq) and expert (high-freq) representations.
 
         Args:
-            x: [B, T, C_in] raw input features.
+            x: [B, T, C_in] or [B, C_in] raw input features.
+               2D inputs are auto-unsqueezed to [B, 1, C_in] for compatibility.
             mask: [B, T] optional padding mask (True = pad, False = valid).
             **encoder_kwargs: Additional arguments passed to the shared encoder.
 
         Returns:
             Dict with:
-                "ctx_planner": [B, T, D]  — Low-freq features for generative heads
-                "global_planner": [B, D]  — Pooled planner summary (mean pool)
-                "ctx_expert": [B, T, D]   — High-freq features for discriminative heads
-                "global_expert": [B, D]   — Pooled expert summary (max pool)
+                "planner": [B, T, D] or [B, D]  — Low-freq features for generative heads
+                "planner_global": [B, D]  — Pooled planner summary (mean pool)
+                "expert": [B, T, D] or [B, D]   — High-freq features for discriminative heads
+                "expert_global": [B, D]   — Pooled expert summary (max pool)
         """
+        # Auto-handle 2D tabular inputs [B, C] → [B, 1, C]
+        squeezed = False
+        if x.dim() == 2:
+            x = x.unsqueeze(1)  # [B, C] → [B, 1, C]
+            squeezed = True
+
         # 1. Shared Encoding → Planner Manifold
         ctx_planner = self.encoder(x, **encoder_kwargs)  # [B, T, D]
+        
+        # Handle encoder returning 2D [B, D] for single-step inputs
+        if ctx_planner.dim() == 2:
+            ctx_planner = ctx_planner.unsqueeze(1)  # [B, D] → [B, 1, D]
 
         # 2. Planner Global Summary (masked mean pooling)
         if mask is not None:
@@ -210,6 +221,11 @@ class AsymmetricLatentBottleneck(nn.Module):
             global_expert = torch.where(all_masked, torch.zeros_like(global_expert), global_expert)
         else:
             global_expert = ctx_expert.max(dim=1)[0]  # [B, D]
+
+        # Auto-squeeze back if input was 2D tabular
+        if squeezed:
+            ctx_planner = ctx_planner.squeeze(1)  # [B, 1, D] → [B, D]
+            ctx_expert = ctx_expert.squeeze(1)     # [B, 1, D] → [B, D]
 
         # [v3.2 Spec] Cache for Spectral Monitoring Callback
         self.last_planner_ctx = global_planner.detach()

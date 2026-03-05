@@ -161,39 +161,14 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
             weighted_task_loss_list.append(norm_loss * self.task_weights[name])
 
         losses_tensor = torch.stack(weighted_task_loss_list)
-        raw_losses_tensor = torch.stack([norm_loss for norm_loss in weighted_task_loss_list]) # Placeholder: need unweighted
-        # Re-extracting unweighted normalized losses
-        unweighted_norm_losses = []
-        for name in self.task_names:
-            pred = predictions[name]
-            target = batch["targets"][name]
-            if pred.dim() <= 2 and target.dim() <= 2:
-                if pred.dim() > target.dim(): pred = pred.squeeze(-1)
-                if target.dim() > pred.dim(): target = target.squeeze(-1)
-            if name in self.target_scalers:
-                target_norm = self.target_scalers[name].normalize(target)
-            else:
-                target_norm = target
-            unweighted_norm_losses.append(self.task_losses[name](pred, target_norm))
-        raw_losses_tensor = torch.stack(unweighted_norm_losses)
 
-        # Consistent Weighter evaluation matching clinical.py
-        if self.is_pcgrad:
-            total_val_loss = losses_tensor.sum()
-        else:
-            shared_params = list(self.backbone.parameters())
-            if self.use_alb:
-                shared_params += list(self.alb.parameters())
-                
-            total_val_loss, w_metrics = self.weighter(
-                losses_tensor,
-                shared_params=shared_params,
-                sync_ddp=self.trainer.world_size > 1 if getattr(self, "trainer", None) else False,
-                raw_losses=raw_losses_tensor,
-            )
-            # Log weighter metrics dynamically during val
-            for key, val in w_metrics.items():
-                self.log(f"val/{key}", val, sync_dist=True)
+        # CRITICAL: val/total_loss must NOT pass through the uncertainty weighter.
+        # KendallWeighter.forward() injects training-evolved σ as precision weights.
+        # As σ shrinks during training, 0.5/σ² grows even when task losses improve —
+        # causing val/total_loss to rise while the model gets better, which corrupts
+        # the early stopping signal.
+        # Plain weighted sum is scale-consistent across all epochs and all methods.
+        total_val_loss = losses_tensor.sum()
 
         self.log("val/total_loss", total_val_loss, sync_dist=True, prog_bar=True)
 
