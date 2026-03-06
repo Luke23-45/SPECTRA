@@ -46,7 +46,7 @@ def get_base_cfg(weighter_name, use_alb, dataset_type="clinical"):
         cfg.tasks = [
             {"name": "outcome", "type": "classification", "num_classes": 1, "loss": "bce", "manifold": "both"},
             {"name": "phase", "type": "classification", "num_classes": 3, "loss": "cross_entropy", "manifold": "planner"},
-            {"name": "los", "type": "regression", "output_dim": 1, "loss": "mse", "manifold": "expert"}
+            {"name": "los", "type": "regression", "loss": "mse", "manifold": "expert"}
         ]
         
     elif dataset_type == "dense":

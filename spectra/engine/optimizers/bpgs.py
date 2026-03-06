@@ -77,12 +77,44 @@ class BPGSEngine(OptimizationEngine):
             loss_net.backward()
 
         if grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(
-                [p for g in raw_opt_net.param_groups for p in g['params']],
-                max_norm=grad_clip,
-            )
+            # SOTA TITANIUM FIX 2: Universal Decoupled Parameter Gradient Clipping
+            # BPGS explicitly forces expert/high-freq task gradients to scale massively.
+            # Using global norm on the entire model squashes unscaled generative trunks to exactly 0.
+            # We must clip EVERY architectural component completely independently.
+            components_to_clip = []
+            if hasattr(module, 'backbone') and module.backbone is not None:
+                components_to_clip.append(module.backbone)
+            if hasattr(module, 'alb') and module.alb is not None:
+                components_to_clip.append(module.alb)
+            if hasattr(module, 'heads') and module.heads is not None:
+                # Clip each head's parameters independently as well
+                for head in module.heads.values():
+                    components_to_clip.append(head)
 
+            if len(components_to_clip) > 0:
+                for comp in components_to_clip:
+                    torch.nn.utils.clip_grad_norm_(comp.parameters(), max_norm=grad_clip)
+            else:
+                # Fallback if architecture doesn't follow expected topology
+                torch.nn.utils.clip_grad_norm_(
+                    [p for g in raw_opt_net.param_groups for p in g['params']],
+                    max_norm=grad_clip,
+                )
+
+        net_step_overflow = False
         if scaler is not None:
+            # Check if gradients overflowed (inf/nan) after unscaling.
+            # If so, scaler.step() skips the step internally, but we MUST know this
+            # so we can synchronize the Fiber flow constraint.
+            opt_net_state = scaler._per_optimizer_states.get(id(raw_opt_net))
+            if opt_net_state is not None:
+                # 3 == inf/nan found in this optimizer
+                if opt_net_state.get('found_inf_per_device', {}):
+                    for found in opt_net_state['found_inf_per_device'].values():
+                        if found.item() > 0:
+                            net_step_overflow = True
+                            break
+
             scaler.step(raw_opt_net)   # raw optimizer → PL hook NOT triggered
         else:
             raw_opt_net.step()
@@ -104,13 +136,25 @@ class BPGSEngine(OptimizationEngine):
                     dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
 
         if scaler is not None:
-            scaler.step(raw_opt_unc)
+            # SOTA TITANIUM FIX 3: Dual-Optimizer AMP Desynchronization Shielding
+            # If the network overflowed to nan/inf, scaler.step(raw_opt_net) was suppressed.
+            # If we allow the Fiber flow (theta params, Pure Fp32) to step now, BPGS 
+            # shifts its probabilistic belief off an imagined network topology that never occurred.
+            # They permanently desynchronize. We MUST freeze the uncertainty step.
+            if not net_step_overflow:
+                scaler.step(raw_opt_unc)
+            else:
+                # We skip stepping the optimizer but MUST manually clear the Fiber gradients.
+                # Otherwise they accumulate infinitely.
+                raw_opt_unc.zero_grad(set_to_none=True)
+
             # Called ONCE, after ALL optimizers have been stepped this iteration.
             # PyTorch docs: "scaler.update should only be called once, after all
             # optimizers used this iteration have been stepped."
             scaler.update()
         else:
-            raw_opt_unc.step()
+            if not net_step_overflow:
+                raw_opt_unc.step()
 
         # ── 4. LR Schedule step ──────────────────────────────────────────────
         if sch_net is not None:

@@ -207,16 +207,25 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
         self.log("val/total_loss", total_val_loss, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
 
     def on_validation_epoch_end(self) -> None:
-        if "outcome_auc" in self._val_metrics:
-            out_auc = self._val_metrics["outcome_auc"]
-            auc_val = out_auc.compute()
-            prc_val = self._val_metrics["outcome_prc"].compute()
-            rec_val = self._val_metrics["outcome_recall"].compute()
-            self.log("val/outcome_AUC", auc_val, prog_bar=True, sync_dist=True)
-            
-            out_auc.reset()
-            self._val_metrics["outcome_prc"].reset()
-            self._val_metrics["outcome_recall"].reset()
+        # [SOTA Fix] Prevent torchmetric Out-Of-Memory (OOM) leaks.
+        # Dynamically evaluate and reset EVERY metric to ensure all caches are freed.
+        # Previously, 'phase_acc' was updated in step but entirely ignored during epoch_end,
+        # causing indefinite memory accumulation across epochs.
+        for name, metric in self._val_metrics.items():
+            try:
+                val = metric.compute()
+                # e.g., 'outcome_auc' -> 'outcome_AUC'
+                parts = name.split('_')
+                if len(parts) >= 2:
+                    log_name = f"val/{parts[0]}_{parts[1].upper()}"
+                else:
+                    log_name = f"val/{name.upper()}"
+                
+                self.log(log_name, val, prog_bar=True, sync_dist=True)
+            except (RuntimeError, ValueError) as err:
+                logger.debug(f"[Validation Epoch {self.current_epoch}] Metric {name} skipped: {str(err)}")
+            finally:
+                metric.reset()
 
     def configure_optimizers(self) -> Dict[str, Any]:
         return build_optimizer_and_scheduler(self, self.cfg)

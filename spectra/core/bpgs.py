@@ -509,8 +509,9 @@ class BPGS(nn.Module):
                 )
             # Use raw unscaled exp(-s_i) to maintain theoretical fixed-point consistency
             # with the uncertainty flow. Stop-gradient (.detach()) is mandatory.
-            weight_i = torch.exp(-s_values[i]).detach()
-            terms.append(0.5 * weight_i * loss_i)
+            # SOTA TITANIUM FIX: FP16 Overflow Shielding. Cast to fp32 before exp()
+            weight_i = torch.exp(-s_values[i].float()).detach()
+            terms.append(0.5 * weight_i * loss_i.float())
 
         return sum(terms)
 
@@ -583,15 +584,17 @@ class BPGS(nn.Module):
 
             # exp(-s_i): precision weight. grad flows: exp(-s_i) → s_i → theta_i.
             # NOT detached here — this is the Fiber Flow gradient path.
-            w_i = torch.exp(-s_i)
+            # SOTA TITANIUM FIX: FP16 Overflow Shielding
+            s_i_fp32 = s_i.float()
+            w_i = torch.exp(-s_i_fp32)
 
             # R_eps(l_bar_i): zero-preserving operator on the (constant) smoothed loss.
             # d/ds_i [w_i * R_eps(l_bar_i)] = -exp(-s_i) * R_eps(l_bar_i)
             # d/ds_i [0.5 * s_i]            = +0.5
             # At equilibrium: exp(-s_i) * R_eps(L_bar_i) = 1  →  s_i* = log(R_eps(L_bar_i))
-            r_val = R_eps(l_bar_i, eps=self.eps)
+            r_val = R_eps(l_bar_i.float(), eps=self.eps)
 
-            terms.append(0.5 * w_i * r_val + 0.5 * s_i)
+            terms.append(0.5 * w_i * r_val + 0.5 * s_i_fp32)
 
         l_unc = sum(terms)
 

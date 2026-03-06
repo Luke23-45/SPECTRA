@@ -32,7 +32,11 @@ def build_weighter(cfg):
             import math
             decay = float(m_cfg.get("ema_decay"))
             decay_safe = max(1e-6, min(1.0 - 1e-6, decay))
-            tau = -1.0 / math.log(1.0 - decay_safe)
+            # SOTA TITANIUM FIX: Exact Discrete Integrator Formulation (Corrected)
+            # Previously: -1.0 / math.log(1.0 - decay_safe) which maps 0.99 to 0.217 (instant forget)
+            # Correctly derived constraint: beta = 1 - decay_safe
+            # beta = 1 - exp(-1/tau) -> exp(-1/tau) = decay_safe -> -1/tau = ln(decay_safe) -> tau = -1/ln(decay_safe)
+            tau = -1.0 / math.log(decay_safe)
             
         return BPGS(
             num_tasks=len(cfg.tasks),

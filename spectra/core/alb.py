@@ -191,14 +191,20 @@ class AsymmetricLatentBottleneck(nn.Module):
         # 5. Expert Self-Organization (Self-Attention)
         # The expert attends to its own features to discover correlations
         # in the high-frequency residual space.
-        # Switched to Pre-Norm for Training Stability (LLaMA/GPT-3 style)
+        # [SOTA TITANIUM FIX] T=1 Tabular Attention Degeneracy Bypass
+        # For sequence length 1, self-attention evaluates to a fixed Softmax(0) = 1.0,
+        # wasting 65k+ parameters on a useless identity mapping that only adds noise via dropout.
         ctx_normed = self.attn_norm(ctx_bypass)
-        key_padding_mask = mask if mask is not None else None
-        attn_out, _ = self.expert_self_attn(
-            ctx_normed, ctx_normed, ctx_normed,
-            key_padding_mask=key_padding_mask,
-        )
-        ctx_expert = ctx_bypass + self.attn_dropout(attn_out)
+        if ctx_normed.size(1) == 1:
+            # Bypass attention entirely for T=1
+            ctx_expert = ctx_bypass
+        else:
+            key_padding_mask = mask if mask is not None else None
+            attn_out, _ = self.expert_self_attn(
+                ctx_normed, ctx_normed, ctx_normed,
+                key_padding_mask=key_padding_mask,
+            )
+            ctx_expert = ctx_bypass + self.attn_dropout(attn_out)
 
         # 6. Expert Deep Projection (GRN Stack)
         ctx_expert = self.expert_proj(ctx_expert)  # [B, T, D]

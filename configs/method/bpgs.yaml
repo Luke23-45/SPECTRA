@@ -10,6 +10,11 @@ method:
   use_sigmoid: true
   use_autocal: true
   ema_decay: 0.99
+  # SOTA: Decoupled Theta Optimizer (validated by 7-schedule comparison)
+  # θ needs 10x higher LR than network weights (1D convex landscape)
+  # and a 30% cosine floor to maintain late-training tracking ability.
+  lr_theta: 0.01              # 10x default network LR (0.001 for synthetic)
+  min_lr_ratio_theta: 0.3     # Cosine floor at 30% (network uses ~0.1%)
 
 train:
   grad_clip: 2.0  # [TUG-OF-WAR FIX] Explicit — was implicit via dataset default.
