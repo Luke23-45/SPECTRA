@@ -13,6 +13,4 @@ module:
 
 train:
   grad_clip: 1.0  # Safe boundary during PCGrad geometric recalibration
-  early_stop_patience: 15  # [TUG-OF-WAR FIX] PCGrad's projected gradients create
-                           # noisier val loss trajectories than standard methods.
-                           # Default patience=10 triggers premature stopping.
+  # [FAIRNESS FIX] early_stop_patience removed — uses global default (20) for all methods.

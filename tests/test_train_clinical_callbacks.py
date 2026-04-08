@@ -1,6 +1,6 @@
 from omegaconf import OmegaConf
 
-from scripts.train import build_checkpoints, build_early_stopping
+from spectra.utils.callbacks import build_checkpoints, build_early_stopping
 
 
 def _cfg(name="clinical"):

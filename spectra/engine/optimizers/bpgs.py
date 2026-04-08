@@ -83,17 +83,19 @@ class BPGSEngine(OptimizationEngine):
             # We must clip EVERY architectural component completely independently.
             components_to_clip = []
             if hasattr(module, 'backbone') and module.backbone is not None:
-                components_to_clip.append(module.backbone)
+                components_to_clip.append(('backbone', module.backbone))
             if hasattr(module, 'alb') and module.alb is not None:
-                components_to_clip.append(module.alb)
+                components_to_clip.append(('alb', module.alb))
             if hasattr(module, 'heads') and module.heads is not None:
-                # Clip each head's parameters independently as well
-                for head in module.heads.values():
-                    components_to_clip.append(head)
+                for head_name, head in module.heads.items():
+                    components_to_clip.append((f'head/{head_name}', head))
 
             if len(components_to_clip) > 0:
-                for comp in components_to_clip:
-                    torch.nn.utils.clip_grad_norm_(comp.parameters(), max_norm=grad_clip)
+                for comp_name, comp in components_to_clip:
+                    # Log pre-clip gradient norm for diagnostic visibility
+                    grad_norm = torch.nn.utils.clip_grad_norm_(comp.parameters(), max_norm=grad_clip)
+                    module.log(f'grad_norm/{comp_name}', grad_norm,
+                               on_step=False, on_epoch=True, sync_dist=True)
             else:
                 # Fallback if architecture doesn't follow expected topology
                 torch.nn.utils.clip_grad_norm_(

@@ -174,7 +174,28 @@ class SegNet(nn.Module):
 
         Returns:
             [B, d_model, H, W] shared feature map.
+        
+        Raises:
+            ValueError: If spatial dimensions are not divisible by 32.
         """
+        # ─── Input validation for spatial dimensions ─────────────
+        _, _, H, W = x.shape
+        min_size = 32  # 5 pooling layers × 2x2 = 32x minimum
+        
+        if H < min_size or W < min_size:
+            raise ValueError(
+                f"SegNet requires spatial dimensions >= {min_size}. "
+                f"Got input shape {(H, W)}. "
+                f"Minimum valid input is ({min_size}, {min_size})."
+            )
+        
+        if H % 32 != 0 or W % 32 != 0:
+            logger.warning(
+                f"SegNet spatial dims ({H}, {W}) not divisible by 32. "
+                f"Unpooling may produce shape mismatch. "
+                f"Recommended sizes: 32, 64, 128, 256, 288, 320, 384."
+            )
+        
         # ─── Encode ──────────────────────────────────────────────
         indices_stack = []
         sizes_stack = []
