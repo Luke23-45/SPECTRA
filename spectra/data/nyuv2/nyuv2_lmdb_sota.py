@@ -15,7 +15,7 @@ STAGES:
     2. CLEANUP: Purge the staging directory and reclaim space.
 
 Safety Guarantees:
-    - DiskGuard: Pre-checks available space (minimum 6GB).
+    - DiskGuard: Pre-checks available space (minimum 3GB).
     - FP64 Welford: Numerically stable global Mean/Std calculation.
     - Atomic Commits: LMDB transactions committed every 100 samples.
     - Architectural Parity: Matches the high-fidelity clinical branch.
@@ -27,7 +27,6 @@ import json
 import lmdb
 import shutil
 import logging
-import hashlib
 import numpy as np
 import torch
 from pathlib import Path
@@ -40,7 +39,7 @@ from typing import Dict, Any, List, Optional, Tuple
 # ==============================================================================
 # Force all HF activity into the project-local staging directory.
 # This MUST be set before engine initialization.
-_PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.parent
+_PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 STAGING_DIR = _PROJECT_ROOT / "data" / "staging_nyuv2"
 os.environ["HF_HOME"] = str(STAGING_DIR.absolute())
 os.environ["HF_DATASETS_CACHE"] = str(STAGING_DIR.absolute())
@@ -51,11 +50,13 @@ os.environ["HF_HUB_CACHE"] = str(STAGING_DIR.absolute())
 # CONFIGURATION
 # ==============================================================================
 DATASET_REPO = "tanganke/nyuv2"
-OUTPUT_DIR = Path("datasets/nyuv2_lmdb")
+OUTPUT_DIR = _PROJECT_ROOT / "datasets" / "nyuv2_lmdb"
 # STAGING_DIR is now globally managed above
 LMDB_MAP_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
 COMMIT_FREQ = 100
 MIN_FREE_SPACE_GB = 3.0
+NUM_CLASSES = 13          # Standard NYUv2 MTL benchmark (Eigen & Fergus reduction)
+IGNORE_INDEX = 255        # CrossEntropyLoss ignore_index
 CLEANUP_STAGING = True  # Toggle to False to keep staged data for future runs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -100,9 +101,16 @@ class WelfordSpatialEngine:
 
 def ensure_contiguous_hwc(array: np.ndarray) -> np.ndarray:
     """Aligns array to [H, W, C] format. Transposes if [C, H, W] is detected."""
+    _CHANNEL_SIZES = {1, 3, 4}
     if array.ndim == 3:
-        # Detected [C, H, W] format (C <= 4)
-        if array.shape[0] <= 4 and array.shape[0] < array.shape[1]:
+        # If last dim is a typical channel count, assume already HWC
+        if array.shape[-1] in _CHANNEL_SIZES:
+            pass  # Already [H, W, C]
+        # If first dim is a typical channel count AND last dim is NOT, assume CHW
+        elif array.shape[0] in _CHANNEL_SIZES and array.shape[-1] not in _CHANNEL_SIZES:
+            array = np.transpose(array, (1, 2, 0))
+        # Fallback: if first dim is small and last dim is large, likely CHW
+        elif array.shape[0] <= 4 and array.shape[0] < min(array.shape[1], array.shape[2]):
             array = np.transpose(array, (1, 2, 0))
     return np.ascontiguousarray(array)
 
@@ -139,7 +147,7 @@ class PhysicsEngine:
         mag = np.linalg.norm(normal, axis=-1, keepdims=True)
         # Handle zero vectors to avoid division by zero. If mag < EPS, we return zero vector.
         # SOTA: Could return [0, 0, 1] as default, but 0 is safer for gradient masks.
-        safe_normal = np.where(mag > PhysicsEngine.EPS, normal / (mag + PhysicsEngine.EPS), 0.0)
+        safe_normal = np.where(mag > PhysicsEngine.EPS, normal / mag, 0.0)
         return safe_normal.astype(np.float32)
 
 class StatsReservoir:
@@ -182,8 +190,9 @@ class StatsReservoir:
 class DiskGuard:
     """Safety check for disk availability."""
     @staticmethod
-    def check_space(min_gb: float = MIN_FREE_SPACE_GB):
-        _, _, free = shutil.disk_usage(".")
+    def check_space(min_gb: float = MIN_FREE_SPACE_GB, path: str = None):
+        check_path = path or str(OUTPUT_DIR.parent.absolute())
+        _, _, free = shutil.disk_usage(check_path)
         free_gb = free / (1024**3)
         if free_gb < min_gb:
             logger.critical(f"DISK SPACE FAILURE: {free_gb:.1f}GB available, need {min_gb}GB.")
@@ -196,7 +205,7 @@ class DiskGuard:
 
 class QualityIngestionEngine:
     def __init__(self):
-        DiskGuard.check_space()
+        DiskGuard.check_space(path=str(OUTPUT_DIR.parent.absolute()))
         
         # Axe v6.1: Multi-Split Foundation
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -253,7 +262,8 @@ class QualityIngestionEngine:
         env = self.envs.get(target_name) or self._init_split_env(target_name)
         txn = env.begin(write=True)
         
-        pbar = tqdm(total=limit if limit else total_estimate, desc=f"Streaming {target_name}")
+        pbar_total = limit if limit else (total_estimate or 0)
+        pbar = tqdm(total=pbar_total if pbar_total > 0 else None, desc=f"Streaming {target_name}")
         try:
             for i, sample in enumerate(ds_split):
                 if limit is not None and i >= limit:
@@ -281,6 +291,10 @@ class QualityIngestionEngine:
                 
                 depth = PhysicsEngine.process_depth(depth_raw)
                 norm = PhysicsEngine.process_normal(norm_raw)
+                
+                # Label validation: remap invalid class indices to IGNORE_INDEX
+                # NYUv2 standard: 13 classes (0-12), 255 = ignore
+                lbl = np.where(lbl < NUM_CLASSES, lbl, IGNORE_INDEX).astype(np.uint8)
                 
                 # Cast to high-fidelity storage formats
                 depth_fp16 = depth.astype(np.float16)
@@ -400,7 +414,7 @@ def cleanup():
 # ==============================================================================
 
 def validate_lmdb():
-    """Reads back samples from all LMDB splits to verify integrity."""
+    """Reads back first and last samples from all LMDB splits to verify integrity."""
     logger.info("Stage 2.5: Verifying LMDB Integrity across splits...")
     
     for split in ["train", "val"]:
@@ -408,16 +422,27 @@ def validate_lmdb():
         if not (split_dir / "data.lmdb").exists():
             logger.warning(f"Validation: {split} LMDB not found at {split_dir}")
             continue
+        
+        # Load index to get last sample index
+        index_path = OUTPUT_DIR / f"{split}_index.json"
+        last_idx = 0
+        if index_path.exists():
+            with open(index_path) as f:
+                manifest = json.load(f)
+            episodes = manifest.get("episodes", [])
+            if episodes:
+                last_idx = episodes[-1]["idx"]
 
         env = lmdb.open(str(split_dir / "data.lmdb"), readonly=True, subdir=False)
         with env.begin() as txn:
-            for suffix in ["img", "lbl", "dpt", "nrm"]:
-                key = f"{split}_0_{suffix}"
-                data = txn.get(key.encode())
-                if data:
-                    logger.info(f"Integrity Check [{split}]: {key} found ({len(data)} bytes).")
-                else:
-                    logger.warning(f"Integrity Check [{split}]: {key} NOT found.")
+            for check_idx in [0, last_idx]:
+                for suffix in ["img", "lbl", "dpt", "nrm"]:
+                    key = f"{split}_{check_idx}_{suffix}"
+                    data = txn.get(key.encode())
+                    if data:
+                        logger.info(f"Integrity Check [{split}]: {key} found ({len(data)} bytes).")
+                    else:
+                        logger.warning(f"Integrity Check [{split}]: {key} NOT found.")
         env.close()
     
     logger.info("Stage 2.5: Validation COMPLETED.")
@@ -426,41 +451,59 @@ def validate_lmdb():
 # MAIN ENTRY POINT
 # ==============================================================================
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="SPECTRA NYUv2 Ingestion")
-    parser.add_argument("--limit", type=int, default=None, help="Limit number of samples per split for testing")
-    args = parser.parse_args()
+def run_pipeline(
+    limit: Optional[int] = None,
+    seed: int = 42,
+    skip_validation: bool = False,
+    keep_staging: bool = False,
+    force: bool = False,
+):
+    """
+    Single entry point for the full NYUv2 data generation pipeline.
 
-    logger.info("="*60)
-    logger.info("SPECTRA MULTI-STAGE INGESTION (v6.0 — Axe Specification)")
-    logger.info("="*60)
-    
-    # Fixed seed for reproducibility
-    SEED = 42
-    np.random.seed(SEED)
-    torch.manual_seed(SEED)
-    logger.info(f"Global seed set to {SEED}")
+    All scripts (CLI, generate_nyuv2.py, tests) should call this function.
+    No logic is duplicated outside this function.
 
+    Args:
+        limit: Max samples per split (None = all). For smoke tests.
+        seed: Global random seed for reproducibility.
+        skip_validation: Skip post-ingestion LMDB integrity check.
+        keep_staging: Keep HuggingFace cache after generation.
+        force: Regenerate even if LMDB data already exists.
+    """
+    # --- Pre-flight: check if data already exists ---
+    if not force:
+        exists = True
+        for split in ["train", "val"]:
+            if not (OUTPUT_DIR / split / "data.lmdb").exists() or not (OUTPUT_DIR / f"{split}_index.json").exists():
+                exists = False
+                break
+        if exists:
+            logger.info("LMDB data already exists for both splits. Use --force to regenerate.")
+            return
+
+    # --- Seed ---
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    logger.info(f"Global seed set to {seed}")
+
+    # --- Ingestion ---
     engine = QualityIngestionEngine()
     success = False
-    
+
     try:
-        # Stage 1: Dataset Acquisition (Streaming mode for speed & low overhead)
         logger.info(f"Phase 1: Streaming dataset from {DATASET_REPO}...")
         ds = load_dataset(DATASET_REPO, streaming=True)
-        
-        # Stage 2: Materialization
+
         available_splits = list(ds.keys())
         logger.info(f"Phase 2: Ingesting streaming splits: {available_splits}")
-        
+
         for split_key in available_splits:
-            engine.process_split(ds[split_key], split_key, limit=args.limit)
-        
+            engine.process_split(ds[split_key], split_key, limit=limit)
+
         success = True
     except (Exception, KeyboardInterrupt) as e:
         logger.critical(f"UNRECOVERABLE FAILURE OR ABORT: {type(e).__name__}: {e}")
-        # Explicitly close envs without finalizing manifest if failed
         for name, env in engine.envs.items():
             env.close()
         raise
@@ -470,15 +513,45 @@ def main():
         else:
             logger.warning("Execution did not complete. Manifests were NOT generated.")
 
-    # Stage 2.5: Validation
-    validate_lmdb()
-    
-    # Stage 3
-    cleanup()
-    
+    # --- Validation ---
+    if not skip_validation:
+        validate_lmdb()
+    else:
+        logger.info("Validation skipped (--skip-validation).")
+
+    # --- Cleanup ---
+    if keep_staging:
+        logger.info(f"Staging kept at {STAGING_DIR} (--keep-staging).")
+    else:
+        cleanup()
+
     logger.info("="*60)
     logger.info("MISSION COMPLETE. NYUv2 is ready for high-fidelity training.")
     logger.info("="*60)
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="SPECTRA NYUv2 Data Generation")
+    parser.add_argument("--limit", type=int, default=None, help="Limit samples per split (for testing)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
+    parser.add_argument("--skip-validation", action="store_true", help="Skip LMDB integrity check")
+    parser.add_argument("--keep-staging", action="store_true", help="Keep HuggingFace cache after generation")
+    parser.add_argument("--force", action="store_true", help="Regenerate even if data exists")
+    args = parser.parse_args()
+
+    logger.info("="*60)
+    logger.info("SPECTRA NYUv2 DATA GENERATION")
+    logger.info("="*60)
+
+    run_pipeline(
+        limit=args.limit,
+        seed=args.seed,
+        skip_validation=args.skip_validation,
+        keep_staging=args.keep_staging,
+        force=args.force,
+    )
+
 
 if __name__ == "__main__":
     main()

@@ -75,6 +75,10 @@ class RandomScaleCrop:
         height, width = image.shape[-2:]
         sc = random.choice(self.scales)
 
+        # Fast path: scale=1.0 is a no-op, skip expensive interpolation
+        if sc == 1.0:
+            return image, label, depth, normal
+
         # Crop region size (inverse of scale — larger scale = smaller crop)
         h, w = int(height / sc), int(width / sc)
 
@@ -115,6 +119,11 @@ class RandomScaleCrop:
             align_corners=True,
         ).squeeze(0)
 
+        # Re-normalize normals after bilinear interpolation (interpolation breaks unit length)
+        mag = normal_crop.norm(dim=0, keepdim=True)
+        mag = mag.clamp(min=1e-8)
+        normal_crop = normal_crop / mag
+
         return image_crop, label_crop, depth_crop, normal_crop
 
 
@@ -154,7 +163,9 @@ class RandomHorizontalFlip:
             depth = torch.flip(depth, dims=[2])
             normal = torch.flip(normal, dims=[2])
 
-            # CRITICAL: Negate x-component of surface normals
+            # CRITICAL: Negate x-component of surface normals after spatial flip
+            # torch.flip returns a view — clone channel 0 before negating to avoid aliasing
+            normal = normal.clone()
             normal[0, :, :] = -normal[0, :, :]
 
         return image, label, depth, normal

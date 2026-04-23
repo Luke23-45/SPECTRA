@@ -7,8 +7,8 @@ Author: SPECTRA Research Team
 Status: Production-Ready
 
 Description:
-    Loads the NYUv2 dataset in MTAN-standard .npy format and returns
-    SPECTRA-compatible batch dictionaries with three task targets:
+    Loads the NYUv2 dataset from LMDB storage (materialized by nyuv2_lmdb_sota.py)
+    and returns SPECTRA-compatible batch dictionaries with three task targets:
     1. Semantic Segmentation (13 classes)
     2. Monocular Depth Estimation
     3. Surface Normal Prediction
@@ -23,11 +23,11 @@ Data Format:
             Normals       → [3, H, W] float32, unit direction (x, y, z)
 
 Safety Guarantees:
-    - Schema validation: verifies file counts match expected split sizes
+    - Fork safety: LMDB env re-initialized per worker process
     - Dtype enforcement: segmentation is ALWAYS int64 (CrossEntropyLoss safe)
     - NaN/Inf trapping: depth and normals checked for corruption
-    - Fork safety: no shared state across DataLoader workers
-    - Ignore class remapping: -1 → 255 for cross-entropy ignore_index
+    - Ignore class remapping: invalid labels → 255 for cross-entropy ignore_index
+    - Label clamping: ensures all label values are in {0..12, 255}
 
 References:
     - Silberman et al. "Indoor Segmentation and Support Inference from RGBD Images" (ECCV 2012)
@@ -81,16 +81,12 @@ class NYUv2Dataset(Dataset):
     """
     NYUv2 Multi-Task Learning Dataset.
 
-    Loads pre-processed .npy files from MTAN-standard directory structure:
+    Loads pre-processed data from LMDB storage (materialized by nyuv2_lmdb_sota.py):
         root/
-            train/
-                image/0.npy, 1.npy, ..., 794.npy
-                label/0.npy, ...
-                depth/0.npy, ...
-                normal/0.npy, ...
-            val/
-                image/0.npy, ..., 653.npy
-                ...
+            train/data.lmdb
+            val/data.lmdb
+            train_index.json
+            val_index.json
 
     Returns SPECTRA-compatible batch dictionary:
         {
@@ -111,7 +107,9 @@ class NYUv2Dataset(Dataset):
         split: "train" or "val".
         augmentation: Enable RandomScaleCrop + RandomHorizontalFlip.
         normalize_rgb: Apply ImageNet normalization (for pretrained backbones).
-        validate_schema: Check file counts match expected sizes.
+        subset_pct: Fraction of data to use (1.0 = all).
+        subset_seed: Seed for subset sampling reproducibility.
+        num_classes: Number of semantic classes (default 13).
     """
 
     def __init__(
@@ -173,14 +171,14 @@ class NYUv2Dataset(Dataset):
             self.indices = all_indices
 
         # --- Build Transforms ---
-        if split == "train" and augmentation:
+        if self.split == "train" and augmentation:
             self.transform = NYUv2TrainTransform(normalize_rgb=normalize_rgb)
         else:
             self.transform = NYUv2TestTransform(normalize_rgb=normalize_rgb)
 
         logger.info(
-            f"[NYUv2-{split.upper()}] Initialized: {self.data_len} samples, "
-            f"augmentation={'ON' if (split == 'train' and augmentation) else 'OFF'}, "
+            f"[NYUv2-{self.split.upper()}] Initialized: {self.data_len} samples, "
+            f"augmentation={'ON' if (self.split == 'train' and augmentation) else 'OFF'}, "
             f"ImageNet_norm={'ON' if normalize_rgb else 'OFF'}"
         )
 
@@ -242,6 +240,13 @@ class NYUv2Dataset(Dataset):
         if torch.isnan(depth).any(): depth = torch.nan_to_num(depth)
         if torch.isnan(normal).any(): normal = torch.nan_to_num(normal)
 
+        # Label integrity: clamp invalid values to IGNORE_INDEX
+        label = torch.where(
+            (label >= 0) & (label < self.num_classes),
+            label,
+            torch.tensor(IGNORE_INDEX, dtype=label.dtype)
+        )
+
         # 3. Apply Transforms
         image, label, depth, normal = self.transform(image, label, depth, normal)
 
@@ -257,7 +262,7 @@ class NYUv2Dataset(Dataset):
             },
             "meta": {
                 "depth_mask": depth_mask,
-                "sample_id": f"nyuv2_{self.split}_{idx}",
+                "sample_id": f"nyuv2_{self.split}_{global_idx}",
             },
         }
 

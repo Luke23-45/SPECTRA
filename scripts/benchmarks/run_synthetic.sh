@@ -4,9 +4,8 @@
 #   SPECTRA Synthetic Benchmark Runner (Bash)
 #
 # DESCRIPTION
-#   This script executes the full 100-epoch convergence gauntlet
-#   on the Synthetic dataset across all six core multi-task
-#   learning baselines.
+#   This script executes the synthetic convergence gauntlet
+#   on the Synthetic dataset across the active SPECTRA method set.
 #
 # NOTES
 #   - Ensures sequential execution.
@@ -30,7 +29,7 @@ NC='\033[0m'   # No Colour / reset
 # --------------------------------------------------------------
 # Configuration  (mirror the PowerShell variables exactly)
 # --------------------------------------------------------------
-METHODS=("static" "kendall" "uwso" "ntkmtl" "pcgrad" "bpgs" "bpgs_alb")
+METHODS=("static" "kendall" "uwso" "gradnorm_proxy" "pcgrad" "bpgs")
 EPOCHS=80
 DATASET="synthetic"
 

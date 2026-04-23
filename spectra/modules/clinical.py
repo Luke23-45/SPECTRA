@@ -37,8 +37,9 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
 
         # 2. Weighter Initialization
         self.weighter = build_weighter(cfg)
-        self.is_pcgrad = (cfg.get("method_name") == "pcgrad" or 
-                          cfg.get("method", {}).get("name") == "pcgrad")
+        method_name = cfg.get("method_name") or cfg.get("method", {}).get("name")
+        self.is_pcgrad = (method_name == "pcgrad")
+        self.is_bpgs = (method_name in ("bpgs", "bpgs_alb"))
         
         # 3. Tasks & Metrics
         self.task_names = [task.name for task in cfg.tasks]
@@ -116,7 +117,7 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
         
         # [SOTA Fix] Route standard methods through the Weighter.
         # PCGrad ignores this total_loss because PCGradEngine does manual surgery.
-        if self.is_pcgrad:
+        if self.is_pcgrad or self.is_bpgs:
             total_loss = losses_tensor.sum()
         else:
             shared_params = list(self.backbone.parameters())

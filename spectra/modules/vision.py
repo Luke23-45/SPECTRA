@@ -40,8 +40,9 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
 
         # 2. Weighter Initialization
         self.weighter = build_weighter(cfg)
-        self.is_pcgrad = (cfg.get("method_name") == "pcgrad" or 
-                          cfg.get("method", {}).get("name") == "pcgrad")
+        method_name = cfg.get("method_name") or cfg.get("method", {}).get("name")
+        self.is_pcgrad = (method_name == "pcgrad")
+        self.is_bpgs = (method_name in ("bpgs", "bpgs_alb"))
         
         # 3. Tasks & Spatial Metrics
         self.task_names = [task.name for task in cfg.tasks]
@@ -66,8 +67,9 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
 
             # Vision Metrics Initialization
             if name == "segmentation":
-                n_classes = task.get("num_classes", 40)
-                self._val_metrics[name] = SegmentationMetrics(n_classes)
+                n_classes = task.get("num_classes", 13)
+                ignore_idx = task.get("ignore_index", 255)
+                self._val_metrics[name] = SegmentationMetrics(n_classes, ignore_index=ignore_idx)
             elif name == "depth":
                 self._val_metrics[name] = DepthMetrics()
             elif name == "normals":
@@ -104,8 +106,9 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
             loss_dict[name] = loss
 
         losses_tensor = torch.stack(weighted_task_loss_list)
+        raw_losses_tensor = torch.stack([loss_dict[n] for n in self.task_names])
         
-        if self.is_pcgrad:
+        if self.is_pcgrad or self.is_bpgs:
             total_loss = losses_tensor.sum()
         else:
             shared_params = list(self.backbone.parameters())
@@ -115,6 +118,7 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
                 losses_tensor,
                 shared_params=shared_params,
                 sync_ddp=self.trainer.world_size > 1 if getattr(self, "trainer", None) else False,
+                raw_losses=raw_losses_tensor,
             )
             bsz = batch.get("input").shape[0] if isinstance(batch.get("input"), torch.Tensor) else 1
             for key, val in w_metrics.items():

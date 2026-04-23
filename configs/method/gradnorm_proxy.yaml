@@ -1,11 +1,12 @@
 # @package _global_
-method_name: uwso
+method_name: gradnorm_proxy
 use_alb: false
 
 method:
-  name: uwso
+  name: gradnorm_proxy
   params:
-    temperature: 2.0
+    update_interval: 100
+    ema_decay: 0.9
 
 train:
   grad_clip: 1.0

@@ -4,11 +4,11 @@ setlocal enabledelayedexpansion
 :: ========================================================================
 :: SPECTRA Synthetic Benchmark Runner (Batch)
 ::
-:: This script executes the full 80-epoch convergence gauntlet on the 
-:: Synthetic dataset across all six core multi-task learning baselines. 
+:: This script executes the synthetic convergence gauntlet on the
+:: Synthetic dataset across the active SPECTRA method set.
 :: ========================================================================
 
-set METHODS=static kendall uwso ntkmtl pcgrad bpgs bpgs_alb
+set METHODS=static kendall uwso gradnorm_proxy pcgrad bpgs
 set EPOCHS=100
 set DATASET=synthetic
 

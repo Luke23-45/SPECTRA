@@ -1,0 +1,31 @@
+# @package _global_
+# ─── B-PGS Only (No ALB — For Dense Prediction / NYUv2) ──────
+method_name: bpgs
+
+# ALB disabled for dense prediction (SegNet backbone)
+use_alb: false
+
+method:
+  name: bpgs
+  use_sigmoid: true
+  use_autocal: true
+  ema_decay: 0.99
+  # SOTA: Decoupled Theta Optimizer (validated by 7-schedule comparison)
+  # θ needs 10x higher LR than network weights (1D convex landscape)
+  # and a 30% cosine floor to maintain late-training tracking ability.
+  lr_theta: 0.01              # 10x default network LR (0.001 for synthetic)
+  min_lr_ratio_theta: 0.3     # Cosine floor at 30% (network uses ~0.1%)
+  # RESEARCH: Gaussian prior on θ stabilizes uncertainty parameter oscillations.
+  # Equivalent to L2 regularization with strength 1/(2·prior_var) on θ only.
+  # Empirically validated: 62% reduction in late-training θ variance.
+  # prior_var=1.0 → pulls θ gently toward 0 (σ⁻¹(0.5) = s_init).
+  prior_var: 1.0
+
+train:
+  grad_clip: 2.0  # [TUG-OF-WAR FIX] Explicit — was implicit via dataset default.
+  # [FAIRNESS FIX] early_stop_patience removed — uses global default (20) for all methods.
+
+# Overrides the `engine` block of whatever Domain Silo is currently active
+module:
+  engine:
+    _target_: spectra.engine.optimizers.BPGSEngine

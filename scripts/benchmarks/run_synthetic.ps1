@@ -3,8 +3,8 @@
 SPECTRA Synthetic Benchmark Runner (PowerShell)
 
 .DESCRIPTION
-This script executes the full 80-epoch convergence gauntlet on the Synthetic dataset
-across all six core multi-task learning baselines. 
+This script executes the synthetic convergence gauntlet on the Synthetic dataset
+across the active SPECTRA method set.
 
 .NOTES
 - Ensures sequential execution.
@@ -14,7 +14,7 @@ across all six core multi-task learning baselines.
 
 $ErrorActionPreference = "Stop"
 
-$METHODS = @("static", "kendall", "uwso", "ntkmtl", "pcgrad", "bpgs", "bpgs_alb")
+$METHODS = @("static", "kendall", "uwso", "gradnorm_proxy", "pcgrad", "bpgs")
 $EPOCHS = 5
 $DATASET = "synthetic"
 

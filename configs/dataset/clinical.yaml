@@ -49,8 +49,8 @@ train:
   min_lr: 0.000001
   warmup_steps: 300
   weight_decay: 0.0001
-  grad_clip: 1.0           # Tightened from 2.0 to bound rising GN and prevent overconfidence
-  precision: "16-mixed"  # Speed up training
+  grad_clip: 1.0
+  precision: 32
   log_every_n_steps: 10
 
   early_stop: true

@@ -1,7 +1,17 @@
 """
-scripts/materialize_nyuv2.py (v2.5)
+scripts/materialize_nyuv2.py (v2.5) — DEPRECATED
 ----------------------------------
-Axe v3.2 Optimized High-Fidelity Materialization.
+DEPRECATED: Use nyuv2_lmdb_sota.py instead, which produces LMDB storage
+with physics validation, statistics, and production-grade integrity checks.
+
+This script is retained for reference only. It saves .npy files without:
+- Depth clamping (0-10m)
+- Normal unit-length normalization
+- Label validation (class indices > 12 not remapped to 255)
+- NaN handling
+- Statistics collection
+
+Legacy: Axe v3.2 Optimized High-Fidelity Materialization.
 - Force `float32` precision (saves 50% space vs float64 source).
 - Maintains "not int" fidelity for images/depth/normals.
 - Streaming iteration to prevent HF cache leaks.
@@ -39,26 +49,32 @@ def materialize():
             
             # --- IMAGE (Force float32) ---
             img = np.array(sample["image"]).astype(np.float32)
-            if img.ndim == 3 and img.shape[0] <= 3:
+            if img.ndim == 3 and img.shape[-1] not in {1, 3, 4} and img.shape[0] in {1, 3, 4}:
                 img = np.moveaxis(img, 0, -1)
             np.save(split_dir / "image" / f"{i}.npy", img)
             
-            # --- LABEL (uint8 is fine for classification indices) ---
+            # --- LABEL (uint8, remap invalid to 255) ---
             lbl = np.array(sample["segmentation"]).astype(np.uint8)
+            lbl = np.where(lbl < 13, lbl, 255).astype(np.uint8)
             np.save(split_dir / "label" / f"{i}.npy", lbl)
             
-            # --- DEPTH (Force float32) ---
+            # --- DEPTH (Force float32, clamp to [0, 10]) ---
             depth = np.array(sample["depth"]).astype(np.float32)
-            if depth.ndim == 3 and depth.shape[0] == 1:
-                depth = depth[0]
+            depth = np.nan_to_num(depth, nan=0.0)
+            if depth.ndim == 3 and depth.shape[-1] not in {1, 3, 4} and depth.shape[0] in {1, 3, 4}:
+                depth = np.moveaxis(depth, 0, -1)
             if depth.ndim == 2:
                 depth = depth[:, :, np.newaxis]
+            depth = np.clip(depth, 0.0, 10.0)
             np.save(split_dir / "depth" / f"{i}.npy", depth)
             
-            # --- NORMAL (Force float32) ---
+            # --- NORMAL (Force float32, unit-length normalization) ---
             norm = np.array(sample["normal"]).astype(np.float32)
-            if norm.ndim == 3 and norm.shape[0] <= 3:
+            norm = np.nan_to_num(norm, nan=0.0)
+            if norm.ndim == 3 and norm.shape[-1] not in {1, 3, 4} and norm.shape[0] in {1, 3, 4}:
                 norm = np.moveaxis(norm, 0, -1)
+            mag = np.linalg.norm(norm, axis=-1, keepdims=True)
+            norm = np.where(mag > 1e-8, norm / mag, 0.0).astype(np.float32)
             np.save(split_dir / "normal" / f"{i}.npy", norm)
             
             count += 1

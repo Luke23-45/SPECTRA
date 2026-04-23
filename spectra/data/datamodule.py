@@ -57,8 +57,18 @@ class SPECTRADataModule(pl.LightningDataModule):
                 force_download=force_download
             )
         elif self.dataset_name == "nyuv2":
-            # NYUv2 usually assumes local extraction from MTAN binaries
-            pass
+            # Validate that LMDB data exists before training starts
+            root = self.cfg.get("root") or self.cfg.get("dataset", {}).get("root", "datasets/nyuv2_lmdb")
+            from pathlib import Path
+            root_path = Path(root)
+            for split in ["train", "val"]:
+                lmdb_path = root_path / split / "data.lmdb"
+                index_path = root_path / f"{split}_index.json"
+                if not lmdb_path.exists() or not index_path.exists():
+                    logger.warning(
+                        f"[NYUv2] Missing data for split '{split}'. "
+                        f"Run: python -m spectra.data.nyuv2.nyuv2_lmdb_sota"
+                    )
 
     def setup(self, stage: Optional[str] = None):
         """Instantiate datasets across all DDP ranks."""
@@ -81,17 +91,21 @@ class SPECTRADataModule(pl.LightningDataModule):
         elif self.dataset_name == "nyuv2":
             root = self.cfg.get("root") or self.cfg.get("dataset", {}).get("root")
             subset_pct = self.cfg.get("subset_pct") or self.cfg.get("dataset", {}).get("subset_pct", 1.0)
+            normalize_rgb = self.cfg.get("normalize_rgb") or self.cfg.get("dataset", {}).get("normalize_rgb", False)
             
             self.train_ds = NYUv2Dataset(
                 root=root,
                 split="train",
                 augmentation=True,
-                subset_pct=subset_pct
+                subset_pct=subset_pct,
+                normalize_rgb=normalize_rgb,
             )
             self.val_ds = NYUv2Dataset(
                 root=root,
                 split="val",
-                augmentation=False
+                augmentation=False,
+                subset_pct=subset_pct,
+                normalize_rgb=normalize_rgb,
             )
 
         elif self.dataset_name == "clinical":

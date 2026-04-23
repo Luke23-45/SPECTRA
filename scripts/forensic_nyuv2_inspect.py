@@ -57,8 +57,8 @@ def forensic_audit(split="train", sample_idx=0):
     img = np.frombuffer(img_bin, dtype=np.uint8).reshape(h, w, 3)
     # Label [H, W] uint8
     lbl = np.frombuffer(lbl_bin, dtype=np.uint8).reshape(h, w)
-    # Depth [H, W, 1] fp16 -> fp32
-    dpt = np.frombuffer(dpt_bin, dtype=np.float16).reshape(h, w, 1).astype(np.float32)
+    # Depth [H, W, 1] fp16 -> fp32 -> squeeze to [H, W] for visualization
+    dpt = np.frombuffer(dpt_bin, dtype=np.float16).reshape(h, w, 1).astype(np.float32).squeeze(-1)
     # Normals [H, W, 3] fp16 -> fp32
     nrm = np.frombuffer(nrm_bin, dtype=np.float16).reshape(h, w, 3).astype(np.float32)
 
@@ -74,6 +74,14 @@ def forensic_audit(split="train", sample_idx=0):
 
     # Value Range Checks
     logger.info(f"[Depth] Range: [{dpt.min():.2f}, {dpt.max():.2f}] (Expected: [0, 10])")
+    
+    # Label integrity check
+    unique_lbl = np.unique(lbl)
+    invalid_lbl = unique_lbl[(unique_lbl >= 13) & (unique_lbl != 255)]
+    if len(invalid_lbl) > 0:
+        logger.warning(f"[Label] Invalid class indices found: {invalid_lbl.tolist()} (Expected: 0-12, 255)")
+    else:
+        logger.info(f"[Label] Class indices valid: {unique_lbl.tolist()}")
     
     # Normal Vector Integrity (Unit Length)
     # We ignore the zero-vectors which indicate invalid regions
@@ -93,7 +101,7 @@ def forensic_audit(split="train", sample_idx=0):
     
     dpt_norm = (dpt - dpt.min()) / (dpt.max() - dpt.min() + 1e-8)
     dpt_vis = (dpt_norm * 255).astype(np.uint8)
-    dpt_vis = cv2.applyColorMap(dpt_vis, cv2.COLORMAP_MAGMA)
+    dpt_vis = cv2.applyColorMap(dpt_vis, cv2.COLORMAP_MAGMA)  # Returns [H, W, 3]
     
     # Normals: [-1, 1] -> [0, 255]
     nrm_vis = ((nrm + 1.0) / 2.0 * 255).astype(np.uint8)

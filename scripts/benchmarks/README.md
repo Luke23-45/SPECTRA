@@ -3,13 +3,15 @@
 This directory contains the automated execution pipelines for the SPECTRA Multi-Task Learning framework.
 
 ## 1. Synthetic Gauntlet
-The `run_synthetic` scripts will execute an unbroken 80-epoch convergence test across the six core MTL baselines:
+The `run_synthetic` scripts execute an unbroken convergence test across the active paper-track method set:
 1. `static` (Equal Weighting)
 2. `kendall` (Uncertainty Weighting)
 3. `uwso` (Uncertainty Weighting + Scalar Optimization)
-4. `ntkmtl` (Neural Tangent Kernel)
+4. `gradnorm_proxy` (Gradient-Norm Proxy Baseline)
 5. `pcgrad` (Projecting Conflicting Gradients)
-6. `bpgs` (Bilateral Projected Gradient Surgery)
+6. `bpgs` (Bounded Precision Gradient Splitting)
+
+`bpgs_alb` is retained only as an archived experimental composite and is not part of the primary paper-track benchmark set.
 
 ### How to Run (Windows)
 **Option A: PowerShell (Recommended)**
