@@ -24,7 +24,7 @@ import sys
 import os
 
 # Path Resolution
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from spectra.core.bpgs_legacy import BPGSScaler as BPGS_Legacy
 from spectra.core.bpgs import BPGS as BPGS_SOTA

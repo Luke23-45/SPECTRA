@@ -191,8 +191,11 @@ class DiskGuard:
     """Safety check for disk availability."""
     @staticmethod
     def check_space(min_gb: float = MIN_FREE_SPACE_GB, path: str = None):
-        check_path = path or str(OUTPUT_DIR.parent.absolute())
-        _, _, free = shutil.disk_usage(check_path)
+        check_path = Path(path or str(OUTPUT_DIR.parent.absolute()))
+        # Walk up to nearest existing ancestor — disk_usage requires an existing path
+        while not check_path.exists():
+            check_path = check_path.parent
+        _, _, free = shutil.disk_usage(str(check_path))
         free_gb = free / (1024**3)
         if free_gb < min_gb:
             logger.critical(f"DISK SPACE FAILURE: {free_gb:.1f}GB available, need {min_gb}GB.")

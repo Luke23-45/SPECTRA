@@ -1,6 +1,6 @@
 """
-scripts/train.py
-----------------
+scripts/run_training.py
+-----------------------
 Mission Control for SPECTRA Experiments.
 Sterile Entry Point — all orchestration is delegated to `spectra.train.runner`.
 """

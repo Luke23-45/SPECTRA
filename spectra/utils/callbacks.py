@@ -11,6 +11,10 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
 def _dataset_key(cfg: DictConfig) -> str:
     """Canonical dataset identifier (backward-compatible)."""
+    dataset_name = cfg.get("dataset_name", None)
+    if dataset_name:
+        return dataset_name
+
     dcfg = cfg.get("dataset", {})
     return dcfg.get("name", dcfg.get("benchmark", "synthetic"))
 

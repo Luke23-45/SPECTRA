@@ -17,7 +17,7 @@ model:
 
 # ─── Training Hyperparameters ────────────────────────────────
 train:
-  epochs: 200
+  epochs: 80
   batch_size: 2           # NYUv2 images are large (288×384) — GPU memory constraint
   lr: 0.0005              # Dense prediction converges well at 5e-4
   min_lr: 0.000001

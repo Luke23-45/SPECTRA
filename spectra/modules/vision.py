@@ -49,7 +49,7 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
         self.task_weights = nn.ParameterDict()
         self.task_losses = nn.ModuleDict()
         
-        self._val_metrics = nn.ModuleDict()
+        self._val_metrics: Dict[str, Any] = {}
         self._val_losses = nn.ModuleDict()
 
         for task in cfg.tasks:

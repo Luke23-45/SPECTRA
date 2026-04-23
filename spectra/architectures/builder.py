@@ -81,7 +81,8 @@ def build_model(cfg: DictConfig) -> nn.Module:
                     if manifold == "expert":
                         outputs[name] = head(f_expert)
                     elif manifold == "both":
-                        outputs[name] = head(torch.cat([f_planner, f_expert], dim=-1))
+                        concat_dim = 1 if f_planner.dim() == 4 else -1
+                        outputs[name] = head(torch.cat([f_planner, f_expert], dim=concat_dim))
                     else:  # "planner" (default)
                         outputs[name] = head(f_planner)
                 return outputs

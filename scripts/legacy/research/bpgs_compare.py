@@ -1,6 +1,6 @@
 """
-scripts/compare_bpgs_sota_vs_legacy.py
----------------------------------------
+scripts/research/bpgs_compare.py
+--------------------------------
 A forensic, side-by-side comparison of the Legacy B-PGS (v2) and the SOTA B-PGS (v3).
 This script executes identical training simulations to verify:
 1. Weight Adaptation Speed (Convergence).
@@ -8,7 +8,8 @@ This script executes identical training simulations to verify:
 3. Gradient Flow Decoupling.
 4. Mathematical robustness under task-loss shifts.
 
-Usage: python scripts/compare_bpgs_sota_vs_legacy.py
+Usage: python scripts/execution/experiment_runner.py bpgs_compare
+Usage: python scripts/research/bpgs_compare.py
 """
 
 import math
@@ -19,7 +20,7 @@ from typing import List, Dict
 # Import both versions
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from spectra.core.bpgs_legacy import BPGSScaler as BPGS_Legacy
 from spectra.core.bpgs import BPGS as BPGS_SOTA

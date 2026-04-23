@@ -30,9 +30,9 @@ def preflight_check(cfg: DictConfig, output_dir: Path) -> None:
             lmdb_train = Path(root) / "train" / "data.lmdb"
             lmdb_val   = Path(root) / "val"   / "data.lmdb"
             if not lmdb_train.exists():
-                errors.append(f"NYUv2 train LMDB missing: {lmdb_train}\n  → Run: python scripts/materialize_nyuv2.py")
+                errors.append(f"NYUv2 train LMDB missing: {lmdb_train}\n  → Run: python scripts/execution/experiment_runner.py nyuv2_generate")
             if not lmdb_val.exists():
-                errors.append(f"NYUv2 val LMDB missing: {lmdb_val}\n  → Run: python scripts/materialize_nyuv2.py")
+                errors.append(f"NYUv2 val LMDB missing: {lmdb_val}\n  → Run: python scripts/execution/experiment_runner.py nyuv2_generate")
 
     # 2. Tasks must be defined
     tasks = list(cfg.get("tasks", []))
