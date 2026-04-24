@@ -17,3 +17,12 @@ logging:
 
 # ─── Output ──────────────────────────────────────────────────
 output_dir: "./outputs/${run_name}"
+
+# ─── Hydra Configuration ───────────────────────────────────────
+# Disable Hydra's timestamped subdir to use stable artifact dir directly
+hydra:
+  run:
+    dir: ${output_dir}
+  sweep:
+    dir: ${output_dir}
+    subdir: ${hydra.job.override_dirname}

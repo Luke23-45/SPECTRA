@@ -22,7 +22,13 @@ from spectra.engine.callbacks import SpectralMonitoringCallback, GradientHealthC
 from spectra.utils.callbacks import build_checkpoints, build_early_stopping
 from spectra.utils.progress import SOTAProgressBar
 from spectra.utils.config import _merge_dataset_defaults
-from spectra.train.artifacts import resolve_artifact_dir, resolve_resume_checkpoint, stable_run_id
+from spectra.train.artifacts import (
+    resolve_artifact_dir,
+    resolve_resume_checkpoint,
+    stable_run_id,
+    save_experiment_config,
+    save_experiment_metadata
+)
 from spectra.train.preflight import preflight_check
 
 logger = logging.getLogger("spectra.runner")
@@ -35,7 +41,6 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     pl.seed_everything(cfg.get("seed", 42), workers=True)
 
     artifact_dir = resolve_artifact_dir(cfg)
-    artifact_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"[Mission-Control] Workspace: {output_dir}")
     logger.info(f"[Mission-Control] Stable Artifact Dir: {artifact_dir}")
@@ -46,6 +51,15 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
 
     # 3. Pre-Flight Validation
     preflight_check(cfg, output_dir)
+
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save config and metadata for publication reproducibility
+    config_path = save_experiment_config(cfg, artifact_dir)
+    logger.info(f"[Mission-Control] Config saved to: {config_path}")
+
+    metadata_path = save_experiment_metadata(cfg, artifact_dir)
+    logger.info(f"[Mission-Control] Metadata saved to: {metadata_path}")
 
     # 4. Data Orchestration
     datamodule = SPECTRADataModule(cfg)

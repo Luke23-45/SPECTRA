@@ -6,12 +6,18 @@ Stable artifact and resume-path utilities for long-running training jobs.
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+import sys
+import platform
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from hydra.utils import get_original_cwd
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
+import torch
 
 
 def _original_cwd() -> Path:
@@ -60,3 +66,189 @@ def stable_run_id(cfg: DictConfig) -> str:
     run_name = str(cfg.get("run_name", "unnamed_run"))
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", run_name).strip("-")
     return safe or "unnamed-run"
+
+
+def _get_git_info() -> Dict[str, Any]:
+    """Get git commit hash, branch, and dirty status."""
+    git_info = {
+        "commit_hash": "unknown",
+        "branch": "unknown",
+        "is_dirty": False
+    }
+    
+    try:
+        # Get commit hash
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=_original_cwd()
+        )
+        if result.returncode == 0:
+            git_info["commit_hash"] = result.stdout.strip()
+        
+        # Get branch name
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=_original_cwd()
+        )
+        if result.returncode == 0:
+            git_info["branch"] = result.stdout.strip()
+        
+        # Check if working directory is dirty
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            cwd=_original_cwd()
+        )
+        if result.returncode == 0:
+            git_info["is_dirty"] = len(result.stdout.strip()) > 0
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+    
+    return git_info
+
+
+def _get_system_info() -> Dict[str, Any]:
+    """Get system and environment information."""
+    return {
+        "torch_version": torch.__version__,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_version": torch.version.cuda if torch.cuda.is_available() else None,
+        "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        "platform": platform.system(),
+        "platform_release": platform.release(),
+        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    }
+
+
+def save_experiment_config(cfg: DictConfig, artifact_dir: Path) -> Path:
+    """
+    Save the resolved configuration to artifact_dir/config.yaml.
+    
+    Args:
+        cfg: The resolved Hydra configuration
+        artifact_dir: The stable artifact directory
+        
+    Returns:
+        Path to the saved config file
+    """
+    config_path = artifact_dir / "config.yaml"
+    
+    # Save as resolved YAML (all interpolations resolved)
+    config_path.write_text(OmegaConf.to_yaml(cfg, resolve=True), encoding="utf-8")
+    
+    return config_path
+
+
+def generate_experiment_metadata(cfg: DictConfig, artifact_dir: Path) -> Dict[str, Any]:
+    """
+    Generate comprehensive metadata for publication reproducibility.
+    
+    Args:
+        cfg: The resolved Hydra configuration
+        artifact_dir: The stable artifact directory
+        
+    Returns:
+        Dictionary containing all metadata
+    """
+    train_cfg = cfg.get("train", {})
+    resolved_resume = resolve_resume_checkpoint(cfg, artifact_dir)
+    method_name = cfg.get("method_name") or cfg.get("method", {}).get("name", "unknown")
+    dataset_name = cfg.get("dataset_name", "unknown")
+    
+    # Extract task information
+    tasks = cfg.get("tasks", [])
+    task_info = []
+    for task in tasks:
+        task_info.append({
+            "name": task.get("name", "unknown"),
+            "type": task.get("type", "unknown"),
+            "loss": task.get("loss", "unknown"),
+            "manifold": task.get("manifold", "unknown"),
+            "weight": task.get("weight", 1.0)
+        })
+    
+    # Extract dataset-specific info
+    dataset_info = {
+        "name": dataset_name,
+        "augmentation": cfg.get("augmentation", False),
+        "subset_pct": cfg.get("subset_pct", 1.0),
+        "subset_seed": cfg.get("subset_seed", 42)
+    }
+    
+    # Add dataset-specific fields
+    if dataset_name == "nyuv2":
+        dataset_info.update({
+            "num_classes": cfg.get("num_classes", 13),
+            "ignore_index": cfg.get("ignore_index", 255),
+            "image_height": cfg.get("image_height", 288),
+            "image_width": cfg.get("image_width", 384),
+            "train_size": cfg.get("train_size", 0),
+            "val_size": cfg.get("val_size", 0)
+        })
+    
+    metadata = {
+        "experiment": {
+            "run_name": cfg.get("run_name", "unnamed_run"),
+            "run_id": stable_run_id(cfg),
+            "method": method_name,
+            "dataset": dataset_name,
+            "seed": cfg.get("seed", 42)
+        },
+        "system": _get_system_info(),
+        "git": _get_git_info(),
+        "dataset": dataset_info,
+        "training": {
+            "epochs": train_cfg.get("epochs", 0),
+            "batch_size": train_cfg.get("batch_size", 0),
+            "lr": train_cfg.get("lr", 0.0),
+            "min_lr": train_cfg.get("min_lr", 0.0),
+            "warmup_steps": train_cfg.get("warmup_steps", 0),
+            "weight_decay": train_cfg.get("weight_decay", 0.0),
+            "grad_clip": train_cfg.get("grad_clip", 0.0),
+            "precision": train_cfg.get("precision", "32"),
+            "num_workers": train_cfg.get("num_workers", 0),
+            "deterministic": train_cfg.get("deterministic", False),
+            "early_stop": train_cfg.get("early_stop", False),
+            "early_stop_patience": train_cfg.get("early_stop_patience", 0),
+            "checkpoint_every_minutes": train_cfg.get("checkpoint_every_minutes", 0)
+        },
+        "resume": {
+            "requested": None if cfg.get("resume_from", None) in (None, "", False) else str(cfg.get("resume_from")),
+            "resolved_checkpoint": str(resolved_resume) if resolved_resume is not None else None,
+            "auto_resume_found": bool(resolved_resume) if str(cfg.get("resume_from", "")).strip().lower() == "auto" else None,
+        },
+        "tasks": task_info,
+        "paths": {
+            "artifact_dir": str(artifact_dir),
+            "config": "config.yaml",
+            "metadata": "metadata.json"
+        },
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    }
+    
+    return metadata
+
+
+def save_experiment_metadata(cfg: DictConfig, artifact_dir: Path) -> Path:
+    """
+    Generate and save metadata.json to artifact_dir.
+    
+    Args:
+        cfg: The resolved Hydra configuration
+        artifact_dir: The stable artifact directory
+        
+    Returns:
+        Path to the saved metadata file
+    """
+    metadata = generate_experiment_metadata(cfg, artifact_dir)
+    metadata_path = artifact_dir / "metadata.json"
+    
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2, default=str)
+    
+    return metadata_path
