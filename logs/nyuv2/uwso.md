@@ -1208,6 +1208,7 @@ Validation DataLoader 0:  73% 60/82 [00:53<00:19,  1.13it/s]
 Validation DataLoader 0:  98% 80/82 [01:11<00:01,  1.12it/s]
 Validation DataLoader 0: 100% 82/82 [01:13<00:00,  1.12it/s]
 Epoch 99: 100% 99/99 [02:42<00:00,  1.64s/it, L=0.241, GN=0.127, vL=1.960, mIoU=0.278, miou=0.278, abs_rel=0.232, angle=26.50]
+=
 `Trainer.fit` stopped: `max_epochs=100` reached.
 [2026-04-24 11:33:55,176][spectra.runner][INFO] - [Mission-Control] Mission Accomplished. [SUCCESS]
 
