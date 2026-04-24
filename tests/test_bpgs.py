@@ -26,25 +26,28 @@ class TestBPGSBounds:
     """Test 1: Sigmoid mapping always stays within bounds."""
 
     def test_bounds_random_theta(self):
-        """For 10,000 random theta values, log_vars must be in [s_min, s_max]."""
-        scaler = BPGS(num_tasks=5, s_min=-3.0, s_max=8.0)
+        """For 10,000 random theta values, log_vars must stay within mapped precision bounds."""
+        # omega_min=0.01 -> s_max approx 4.605
+        # omega_max=100.0 -> s_min approx -4.605
+        scaler = BPGS(num_tasks=5, omega_min=0.01, omega_max=100.0)
+        s_min, s_max = scaler.s_min_v[0].item(), scaler.s_max_v[0].item()
+        
         with torch.no_grad():
             for _ in range(100):
                 scaler.theta.data = torch.randn(5) * 50  # Wild values
                 log_vars = scaler.get_log_vars()
                 for v in log_vars:
-                    assert (v >= -3.0), f"Below s_min: {log_vars}"
-                    assert (v <= 8.0), f"Above s_max: {log_vars}"
+                    assert (v >= s_min - 1e-5), f"Below s_min: {v} < {s_min}"
+                    assert (v <= s_max + 1e-5), f"Above s_max: {v} > {s_max}"
 
     def test_bounds_extreme_theta(self):
         """Extreme theta values (+/-1000) must still produce valid bounds."""
-        scaler = BPGS(num_tasks=3, s_min=-2.0, s_max=10.0)
-        with torch.no_grad():
-            scaler.theta.data = torch.tensor([1000.0, -1000.0, 0.0])
+        scaler = BPGS(num_tasks=3, omega_min=0.0001, omega_max=10.0)
+        s_min, s_max = scaler.s_min_v[0].item(), scaler.s_max_v[0].item()
         log_vars = scaler.get_log_vars()
-        assert (-2.0 <= log_vars[0] <= 10.0)
-        assert (-2.0 <= log_vars[1] <= 10.0)
-        assert (-2.0 <= log_vars[2] <= 10.0)
+        assert (s_min - 1e-5 <= log_vars[0] <= s_max + 1e-5)
+        assert (s_min - 1e-5 <= log_vars[1] <= s_max + 1e-5)
+        assert (s_min - 1e-5 <= log_vars[2] <= s_max + 1e-5)
 
 
 class TestBPGSGradients:
@@ -52,7 +55,7 @@ class TestBPGSGradients:
 
     def test_gradient_exists(self):
         """theta.grad must be non-None and non-zero after uncertainty backward."""
-        scaler = BPGS(num_tasks=3, s_min=-2.0, s_max=10.0)
+        scaler = BPGS(num_tasks=3, omega_min=0.1, omega_max=10.0)
         # Update EMA with some signal
         scaler.update_ema([torch.tensor(100.0), torch.tensor(5.0), torch.tensor(0.5)])
         
@@ -64,7 +67,7 @@ class TestBPGSGradients:
 
     def test_gradient_at_boundary(self):
         """Gradients must be non-zero even when theta pushes toward bounds."""
-        scaler = BPGS(num_tasks=2, s_min=-2.0, s_max=10.0)
+        scaler = BPGS(num_tasks=2, omega_min=0.1, omega_max=10.0)
         with torch.no_grad():
             # Use moderate values where sigmoid is near boundary but not saturated
             scaler.theta.data = torch.tensor([5.0, -5.0])
@@ -115,7 +118,7 @@ class TestBPGSShadowVariable:
 
     def test_no_theta_explosion(self):
         """Even with massive losses, theta should stay finite due to manifold curvature."""
-        scaler = BPGS(num_tasks=2, s_min=-2.0, s_max=10.0)
+        scaler = BPGS(num_tasks=2, omega_min=0.1, omega_max=10.0)
         optimizer = torch.optim.Adam(scaler.parameters(), lr=1.0)
         
         for _ in range(50):
@@ -128,11 +131,12 @@ class TestBPGSShadowVariable:
             
         assert torch.isfinite(scaler.theta).all()
         log_vars = scaler.get_log_vars()
-        assert all(v <= 10.1 for v in log_vars)
+        s_max = scaler.s_max_v[0].item()
+        assert all(v <= s_max + 0.1 for v in log_vars)
 
     def test_recovery_after_reversal(self):
         """Log_var should move in according to loss scales."""
-        scaler = BPGS(num_tasks=1, s_min=-2.0, s_max=10.0)
+        scaler = BPGS(num_tasks=1, omega_min=0.0001, omega_max=1000.0)
         optimizer = torch.optim.Adam(scaler.parameters(), lr=0.1)
 
         # Phase 1: Small losses

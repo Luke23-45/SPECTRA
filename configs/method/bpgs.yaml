@@ -4,9 +4,9 @@ use_alb: false
 
 method:
   name: bpgs
-  s_min: -10.0
-  s_max: 10.0
-  s_init: 0.0
+  omega_min: 0.1   # Minimum weight limit
+  omega_max: 10.0  # Maximum weight limit
+  omega_init: 1.0  # Starting weight
 
 module:
   engine:
