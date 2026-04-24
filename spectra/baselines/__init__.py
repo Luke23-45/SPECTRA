@@ -16,6 +16,7 @@ WEIGHTER_REGISTRY = {
     "gradnorm_proxy": GradNormProxyWeighter,
     "bpgs": None,
     "bpgs_alb": None,
+    "bpgs_scaleinv": None,
 }
 
 
@@ -23,7 +24,7 @@ def build_weighter(cfg):
     """Factory: build a weighter from config."""
     name = cfg.get("method_name") or cfg.get("method", {}).get("name")
 
-    if name in ("bpgs", "bpgs_alb"):
+    if name in ("bpgs", "bpgs_alb", "bpgs_scaleinv"):
         from spectra.core.bpgs import BPGS
 
         m_cfg = cfg.get("method", {})
@@ -32,6 +33,9 @@ def build_weighter(cfg):
             s_min=m_cfg.get("s_min", -10.0),
             s_max=m_cfg.get("s_max", 10.0),
             s_init=m_cfg.get("s_init", 0.0),
+            relative_loss_invariance=m_cfg.get("relative_loss_invariance", True),
+            relative_loss_floor=m_cfg.get("relative_loss_floor", 1e-8),
+            relative_loss_mode=m_cfg.get("relative_loss_mode", "max"),
         )
 
     cls = WEIGHTER_REGISTRY.get(name)

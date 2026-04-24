@@ -42,7 +42,7 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
         self.weighter = build_weighter(cfg)
         method_name = cfg.get("method_name") or cfg.get("method", {}).get("name")
         self.is_pcgrad = (method_name == "pcgrad")
-        self.is_bpgs = (method_name in ("bpgs", "bpgs_alb"))
+        self.is_bpgs = (method_name in ("bpgs", "bpgs_alb", "bpgs_scaleinv"))
         
         # 3. Tasks & Spatial Metrics
         self.task_names = [task.name for task in cfg.tasks]

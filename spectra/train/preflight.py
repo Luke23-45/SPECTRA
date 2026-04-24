@@ -49,7 +49,7 @@ def preflight_check(cfg: DictConfig, output_dir: Path) -> None:
         errors.append("cfg.tasks is empty — no tasks configured. Check your dataset config.")
 
     # 3. Method name must be valid
-    valid_methods = {"bpgs", "bpgs_alb", "kendall", "uwso", "pcgrad", "gradnorm_proxy", "static"}
+    valid_methods = {"bpgs", "bpgs_alb", "bpgs_scaleinv", "kendall", "uwso", "pcgrad", "gradnorm_proxy", "static"}
     method_name = cfg.get("method_name") or cfg.get("method", {}).get("name", "unknown")
     if method_name not in valid_methods:
         errors.append(f"Unknown method: '{method_name}'. Valid: {sorted(valid_methods)}")

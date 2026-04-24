@@ -1,0 +1,139 @@
+{
+  "best": {
+    "name": "max_c0.65",
+    "normalization": "max",
+    "linear_coef": 0.65,
+    "mean_score": 1.3649441855294364,
+    "mean_seg_loss": 2.8866807392665317,
+    "mean_depth_loss": 0.23857241656099046,
+    "mean_normals_loss": 0.010252620226570539
+  },
+  "runner_up": {
+    "name": "max_c0.5",
+    "normalization": "max",
+    "linear_coef": 0.5,
+    "mean_score": 1.3650537388665336,
+    "mean_seg_loss": 2.8868859836033414,
+    "mean_depth_loss": 0.2386349482195718,
+    "mean_normals_loss": 0.010251926790390695
+  },
+  "worst": {
+    "name": "raw_c0.65",
+    "normalization": "raw",
+    "linear_coef": 0.65,
+    "mean_score": 1.3704834154673986,
+    "mean_seg_loss": 2.8995794228145053,
+    "mean_depth_loss": 0.23774157890251704,
+    "mean_normals_loss": 0.010211942185248648
+  },
+  "ranking": [
+    {
+      "name": "max_c0.65",
+      "normalization": "max",
+      "linear_coef": 0.65,
+      "mean_score": 1.3649441855294364,
+      "mean_seg_loss": 2.8866807392665317,
+      "mean_depth_loss": 0.23857241656099046,
+      "mean_normals_loss": 0.010252620226570539
+    },
+    {
+      "name": "max_c0.5",
+      "normalization": "max",
+      "linear_coef": 0.5,
+      "mean_score": 1.3650537388665336,
+      "mean_seg_loss": 2.8868859836033414,
+      "mean_depth_loss": 0.2386349482195718,
+      "mean_normals_loss": 0.010251926790390695
+    },
+    {
+      "name": "max_c0.35",
+      "normalization": "max",
+      "linear_coef": 0.35,
+      "mean_score": 1.3651035342897688,
+      "mean_seg_loss": 2.88695342200143,
+      "mean_depth_loss": 0.2387025228568486,
+      "mean_normals_loss": 0.010253744732056345
+    },
+    {
+      "name": "mean_c0.35",
+      "normalization": "mean",
+      "linear_coef": 0.35,
+      "mean_score": 1.3667134046554565,
+      "mean_seg_loss": 2.890826804297311,
+      "mean_depth_loss": 0.23826895228454045,
+      "mean_normals_loss": 0.010235981882682868
+    },
+    {
+      "name": "mean_c0.5",
+      "normalization": "mean",
+      "linear_coef": 0.5,
+      "mean_score": 1.3671928644180298,
+      "mean_seg_loss": 2.891931022916521,
+      "mean_depth_loss": 0.2382168812411172,
+      "mean_normals_loss": 0.010232081636786461
+    },
+    {
+      "name": "mean_c0.65",
+      "normalization": "mean",
+      "linear_coef": 0.65,
+      "mean_score": 1.3674027579171317,
+      "mean_seg_loss": 2.8923940317971364,
+      "mean_depth_loss": 0.2382282785006932,
+      "mean_normals_loss": 0.010228448015238558
+    },
+    {
+      "name": "geo_c0.35",
+      "normalization": "geo",
+      "linear_coef": 0.35,
+      "mean_score": 1.3691110440662928,
+      "mean_seg_loss": 2.896932533809117,
+      "mean_depth_loss": 0.23701464916978562,
+      "mean_normals_loss": 0.010287710066352571
+    },
+    {
+      "name": "geo_c0.5",
+      "normalization": "geo",
+      "linear_coef": 0.5,
+      "mean_score": 1.3692505019051688,
+      "mean_seg_loss": 2.897207498550415,
+      "mean_depth_loss": 0.2370759184871401,
+      "mean_normals_loss": 0.010283534015927995
+    },
+    {
+      "name": "raw_c0.35",
+      "normalization": "raw",
+      "linear_coef": 0.35,
+      "mean_score": 1.3697230986186437,
+      "mean_seg_loss": 2.8979813030787875,
+      "mean_depth_loss": 0.237568627510752,
+      "mean_normals_loss": 0.010231796252940382
+    },
+    {
+      "name": "geo_c0.65",
+      "normalization": "geo",
+      "linear_coef": 0.65,
+      "mean_score": 1.3697634083884103,
+      "mean_seg_loss": 2.8983082430703297,
+      "mean_depth_loss": 0.23715789403234208,
+      "mean_normals_loss": 0.010268600657582283
+    },
+    {
+      "name": "raw_c0.5",
+      "normalization": "raw",
+      "linear_coef": 0.5,
+      "mean_score": 1.370207326752799,
+      "mean_seg_loss": 2.8990000656672885,
+      "mean_depth_loss": 0.23767628414290293,
+      "mean_normals_loss": 0.010220135429075785
+    },
+    {
+      "name": "raw_c0.65",
+      "normalization": "raw",
+      "linear_coef": 0.65,
+      "mean_score": 1.3704834154673986,
+      "mean_seg_loss": 2.8995794228145053,
+      "mean_depth_loss": 0.23774157890251704,
+      "mean_normals_loss": 0.010211942185248648
+    }
+  ]
+}

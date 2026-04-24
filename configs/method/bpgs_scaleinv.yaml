@@ -1,15 +1,15 @@
 # @package _global_
-method_name: bpgs
+method_name: bpgs_scaleinv
 use_alb: false
 
 method:
-  name: bpgs
+  name: bpgs_scaleinv
   s_min: -10.0
   s_max: 10.0
   s_init: 0.0
-  relative_loss_invariance: false
+  relative_loss_invariance: true
   relative_loss_floor: 1.0e-8
-  relative_loss_mode: raw
+  relative_loss_mode: max
 
 module:
   engine:

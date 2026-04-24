@@ -180,6 +180,30 @@ def test_nyuv2_preflight_requires_index_files(tmp_path):
     assert "Pre-flight check FAILED" in message
 
 
+
+
+def test_nyuv2_preflight_accepts_bpgs_scaleinv_method(tmp_path):
+    root = tmp_path / "nyuv2"
+    (root / "train").mkdir(parents=True)
+    (root / "val").mkdir(parents=True)
+    (root / "train" / "data.lmdb").write_bytes(b"")
+    (root / "val" / "data.lmdb").write_bytes(b"")
+    (root / "train_index.json").write_text("{\"episodes\": [], \"metadata\": {}}", encoding="utf-8")
+    (root / "val_index.json").write_text("{\"episodes\": [], \"metadata\": {}}", encoding="utf-8")
+
+    cfg = OmegaConf.create(
+        {
+            "dataset_name": "nyuv2",
+            "root": str(root),
+            "method_name": "bpgs_scaleinv",
+            "tasks": [{"name": "segmentation", "loss": "cross_entropy"}],
+            "train": {"batch_size": 2},
+        }
+    )
+
+    preflight_check(cfg, Path("."))
+
+
 def test_nyuv2_root_resolution_supports_nested_data_dir(tmp_path):
     nested = tmp_path / "nyuv2_lmdb" / "data"
     (nested / "train").mkdir(parents=True)

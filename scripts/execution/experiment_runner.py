@@ -27,7 +27,7 @@ HYDRA_TRAINING_MODULE = "scripts.run_training"
 
 METHODS_BY_DATASET: Dict[str, List[str]] = {
     "synthetic": ["static", "kendall", "uwso", "gradnorm_proxy", "pcgrad", "bpgs"],
-    "nyuv2": ["static", "kendall", "uwso", "gradnorm_proxy", "pcgrad", "bpgs", "bpgs_alb"],
+    "nyuv2": ["static", "kendall", "uwso", "gradnorm_proxy", "pcgrad", "bpgs", "bpgs_alb", "bpgs_scaleinv"],
     "clinical": ["bpgs"],
 }
 
