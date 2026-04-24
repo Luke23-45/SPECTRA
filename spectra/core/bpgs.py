@@ -79,13 +79,22 @@ class BPGS(nn.Module):
         return total_loss
 
     def uncertainty_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
-        """Fiber flow objective for uncertainty parameters."""
+        """
+        Analytical Tracking (AT) objective for uncertainty parameters.
+        Eliminates the conflict between likelihood and regularization terms by
+        targeting the Bayesian equilibrium directly via quadratic log-matching.
+        """
         s = self.get_s()
-        precision = torch.exp(-s)
-
         total_loss = 0
         for i, loss in enumerate(raw_losses):
-            total_loss = total_loss + 0.5 * precision[i] * loss.detach() + 0.5 * s[i]
+            # Target for log-variance is log(loss).
+            # Using 1e-6 epsilon for numerical stability in the log.
+            target = torch.log(loss.detach().clamp(min=1e-6))
+            
+            # Quadratic Tracking: 0.5 * (s - s*)^2
+            # Provides linear gradients (w.r.t s) and removes the 'competing pull' flaw.
+            total_loss = total_loss + 0.5 * (s[i] - target)**2
+            
         return total_loss
 
     def forward(self, losses: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:

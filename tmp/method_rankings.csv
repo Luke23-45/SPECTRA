@@ -1,0 +1,9 @@
+,bpgs_alb_nyuv2_s42,bpgs_nyuv2_s42,gradnorm_proxy_nyuv2_s42,kendall_nyuv2_s42,static_nyuv2_s42,uwso_nyuv2_s42
+val/miou,6.0,3.0,5.0,4.0,1.0,2.0
+val/depth_abs_rel,5.0,2.0,4.0,3.0,6.0,1.0
+val/depth_rmse,4.0,1.0,6.0,3.0,5.0,2.0
+val/segmentation_miou,6.0,3.0,5.0,4.0,1.0,2.0
+val/segmentation_pixel_acc,6.0,3.0,5.0,4.0,1.0,2.0
+val/normals_mean_angle,6.0,3.0,2.0,4.0,5.0,1.0
+val/normals_within_11_25,6.0,3.0,2.0,4.0,5.0,1.0
+val/total_loss,6.0,2.0,5.0,3.0,4.0,1.0
