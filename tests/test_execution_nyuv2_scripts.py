@@ -64,6 +64,18 @@ def test_nyuv2_default_root_matches_lmdb_layout():
     assert cfg["dataset"]["root"] == "${root}"
 
 
+def test_pcgrad_method_enables_resume_friendly_logging_and_checkpoints():
+    import yaml
+
+    with open("configs/method/pcgrad.yaml", "r", encoding="utf-8") as handle:
+        cfg = yaml.safe_load(handle)
+
+    assert cfg["train"]["save_ckpt"] is True
+    assert cfg["train"]["checkpoint_every_minutes"] == 10
+    assert cfg["logging"]["use_wandb"] is True
+    assert cfg["logging"]["wandb_mode"] == "offline"
+
+
 def test_build_nyuv2_publication_plan_includes_data_prep_and_seed_sweep():
     plan = build_nyuv2_publication_plan(
         methods=["static", "bpgs"],

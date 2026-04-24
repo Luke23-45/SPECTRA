@@ -7,6 +7,7 @@ defaults:
 method_name: "${method.name}"
 run_name: "${method_name}_${dataset_name}_s${seed}"
 seed: 42
+resume_from: null
 
 # ─── Logging ─────────────────────────────────────────────────
 logging:

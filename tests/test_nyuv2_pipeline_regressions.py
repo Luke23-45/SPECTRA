@@ -11,6 +11,7 @@ from spectra.modules.vision import VisionSPECTRAModule
 from spectra.engine.optimizers.standard import StandardEngine
 from spectra.data.nyuv2.transforms import NYUv2TestTransform
 from spectra.train.preflight import preflight_check
+from spectra.train.artifacts import resolve_resume_checkpoint
 from spectra.utils.callbacks import build_checkpoints, build_early_stopping
 
 
@@ -18,7 +19,7 @@ def test_nyuv2_callbacks_use_top_level_dataset_name():
     cfg = OmegaConf.create(
         {
             "dataset_name": "nyuv2",
-            "train": {"save_ckpt": True, "early_stop": True, "early_stop_patience": 3},
+            "train": {"save_ckpt": True, "early_stop": True, "early_stop_patience": 3, "checkpoint_every_minutes": 10},
         }
     )
 
@@ -27,6 +28,7 @@ def test_nyuv2_callbacks_use_top_level_dataset_name():
 
     assert "val/miou" in monitors
     assert "val/total_loss" in monitors
+    assert any(getattr(c, "_train_time_interval", None) is not None for c in ckpts)
 
     es = build_early_stopping(cfg)
     assert es is not None
@@ -181,3 +183,16 @@ def test_nyuv2_root_resolution_supports_nested_data_dir(tmp_path):
     resolved = resolve_nyuv2_root(tmp_path / "nyuv2_lmdb")
 
     assert resolved == nested
+
+
+def test_resume_from_auto_uses_last_checkpoint_in_stable_artifact_dir(tmp_path):
+    artifact_dir = tmp_path / "outputs" / "pcgrad_nyuv2_s42"
+    ckpt_path = artifact_dir / "checkpoints" / "last.ckpt"
+    ckpt_path.parent.mkdir(parents=True)
+    ckpt_path.write_bytes(b"checkpoint")
+
+    cfg = OmegaConf.create({"resume_from": "auto"})
+
+    resolved = resolve_resume_checkpoint(cfg, artifact_dir)
+
+    assert resolved == ckpt_path

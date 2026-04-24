@@ -21,7 +21,7 @@ class GradNormProxyWeighter(BaseWeighter):
     def __init__(self, num_tasks: int, update_interval: int = 100, ema_decay: float = 0.9, **kwargs):
         super().__init__(num_tasks)
         self._update_interval = update_interval
-        self._ema_decay = ema_decay
+        self._ema_decay = float(ema_decay)
         self.register_buffer("weights", torch.ones(num_tasks))
         self.register_buffer("spectral_energy", torch.ones(num_tasks))
         self.register_buffer("step_count", torch.tensor(0, dtype=torch.long))
@@ -81,7 +81,10 @@ class GradNormProxyWeighter(BaseWeighter):
             norms_t /= dist.get_world_size()
 
         with torch.no_grad():
-            self.spectral_energy.lerp_(norms_t, 1.0 - self._ema_decay)
+            if self._ema_decay > 0.0:
+                self.spectral_energy.lerp_(norms_t, 1.0 - self._ema_decay)
+            else:
+                self.spectral_energy.copy_(norms_t)
             safe_energy = self.spectral_energy.clamp(min=1e-4)
             inv_weights = 1.0 / safe_energy
             self.weights.copy_(inv_weights * self.num_tasks / inv_weights.sum())

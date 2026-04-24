@@ -22,6 +22,7 @@ from spectra.engine.callbacks import SpectralMonitoringCallback, GradientHealthC
 from spectra.utils.callbacks import build_checkpoints, build_early_stopping
 from spectra.utils.progress import SOTAProgressBar
 from spectra.utils.config import _merge_dataset_defaults
+from spectra.train.artifacts import resolve_artifact_dir, resolve_resume_checkpoint, stable_run_id
 from spectra.train.preflight import preflight_check
 
 logger = logging.getLogger("spectra.runner")
@@ -33,7 +34,11 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     # 1. Environment & Seeding
     pl.seed_everything(cfg.get("seed", 42), workers=True)
 
+    artifact_dir = resolve_artifact_dir(cfg)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
     logger.info(f"[Mission-Control] Workspace: {output_dir}")
+    logger.info(f"[Mission-Control] Stable Artifact Dir: {artifact_dir}")
     logger.info(f"[Mission-Control] Config:\n{OmegaConf.to_yaml(cfg)}")
 
     # 2. Configuration Integrity 
@@ -62,7 +67,7 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
 
     # 6. Callback Infrastructure
     callbacks = [
-        *build_checkpoints(cfg, output_dir),
+        *build_checkpoints(cfg, artifact_dir),
         SpectralMonitoringCallback(log_every_n_epochs=5),
         GradientHealthCallback(check_interval=50),
         LearningRateMonitor(logging_interval="step"),
@@ -80,15 +85,15 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     # all assets (configs, checkpoints, logs) are bundled together.
     method_name = cfg.get("method_name", cfg.get("method", {}).get("name", "unknown"))
     dataset_name = cfg.get("dataset_name", "unknown")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = stable_run_id(cfg)
     
     csv_logger = CSVLogger(
-        save_dir=str(output_dir),
+        save_dir=str(artifact_dir),
         name="csv_logs",
-        version=f"{method_name}_{timestamp}"
+        version=run_id,
     )
     loggers.append(csv_logger)
-    logger.info(f"[Logging] CSV Logger initialized in artifact shell: {output_dir}/csv_logs/{method_name}_{timestamp}")
+    logger.info(f"[Logging] CSV Logger initialized in stable artifact dir: {artifact_dir}/csv_logs/{run_id}")
 
     # 7.2 WandB Integration (Optional)
     if cfg.get("logging", {}).get("use_wandb", False):
@@ -99,9 +104,11 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
         wandb_logger = WandbLogger(
             project=cfg.logging.get("wandb_project", "spectra-mtl"),
             name=cfg.get("run_name", "unnamed_run"),
-            save_dir=str(output_dir),
+            save_dir=str(artifact_dir),
             offline=(cfg.logging.get("wandb_mode") == "offline"),
             log_model=False,
+            id=run_id,
+            resume="allow",
         )
         if wandb_logger.experiment is not None:
             wandb_logger.experiment.config.update(
@@ -134,8 +141,12 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     )
 
     # 9. Mission Start
-    ckpt_path = cfg.get("resume_from", None)
-    if ckpt_path: logger.info(f"[Mission-Control] Resuming from checkpoint: {ckpt_path}")
+    resolved_resume = resolve_resume_checkpoint(cfg, artifact_dir)
+    ckpt_path = str(resolved_resume) if resolved_resume is not None else None
+    if ckpt_path:
+        logger.info(f"[Mission-Control] Resuming from checkpoint: {ckpt_path}")
+    elif str(cfg.get("resume_from", "")).strip().lower() == "auto":
+        logger.info("[Mission-Control] resume_from=auto requested, but no prior last.ckpt was found. Starting fresh.")
     
     logger.info(
         f"[Mission-Control] All systems GO. "

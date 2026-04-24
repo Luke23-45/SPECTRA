@@ -12,3 +12,9 @@ module:
 train:
   grad_clip: 1.0
   precision: 32
+  save_ckpt: true
+  checkpoint_every_minutes: 10
+
+logging:
+  use_wandb: true
+  wandb_mode: offline

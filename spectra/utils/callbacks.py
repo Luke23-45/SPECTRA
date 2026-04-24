@@ -6,6 +6,7 @@ Universal Checkpoint and Early Stopping Factory.
 
 from pathlib import Path
 from typing import List, Optional
+from datetime import timedelta
 from omegaconf import DictConfig
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
@@ -75,6 +76,17 @@ def build_checkpoints(cfg: DictConfig, output_dir: Path) -> List[ModelCheckpoint
             mode="min",
             save_top_k=3,
             save_last=True,
+            auto_insert_metric_name=False,
+        ))
+
+    checkpoint_every_minutes = cfg.train.get("checkpoint_every_minutes", 0)
+    if checkpoint_every_minutes and checkpoint_every_minutes > 0:
+        checkpoints.append(ModelCheckpoint(
+            dirpath=ckpt_dir,
+            filename="resume-ep{epoch:02d}-step{step}",
+            train_time_interval=timedelta(minutes=int(checkpoint_every_minutes)),
+            save_top_k=-1,
+            save_on_train_epoch_end=False,
             auto_insert_metric_name=False,
         ))
 

@@ -11,6 +11,7 @@ import torch
 import logging
 from omegaconf import DictConfig
 from spectra.data.nyuv2.dataset import resolve_nyuv2_root
+from spectra.train.artifacts import resolve_artifact_dir, resolve_resume_checkpoint
 
 logger = logging.getLogger("spectra.preflight")
 
@@ -61,8 +62,10 @@ def preflight_check(cfg: DictConfig, output_dir: Path) -> None:
             errors.append(f"Task '{task_cfg.get('name', '?')}': unknown loss '{loss_name}'. Valid: {sorted(valid_losses)}")
 
     # 5. Resume checkpoint exists if specified
-    ckpt_path = cfg.get("resume_from", None)
-    if ckpt_path and not Path(ckpt_path).exists():
+    artifact_dir = resolve_artifact_dir(cfg)
+    raw_resume = cfg.get("resume_from", None)
+    ckpt_path = resolve_resume_checkpoint(cfg, artifact_dir)
+    if raw_resume not in (None, "", False) and str(raw_resume).strip().lower() != "auto" and ckpt_path is not None and not ckpt_path.exists():
         errors.append(f"Resume checkpoint not found: {ckpt_path}\n  → Check the path or remove 'resume_from' from config.")
 
     # 6. GPU memory sanity (warn only, do not block)
