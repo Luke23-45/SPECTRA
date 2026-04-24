@@ -4,7 +4,7 @@
 
 dataset_name: nyuv2
 benchmark: nyuv2
-root: "datasets/nyuv2_lmdb"
+root: "datasets/nyuv2_lmdb/data"
 augmentation: true
 normalize_rgb: false
 subset_pct: 1.0
@@ -69,9 +69,9 @@ tasks:
     weight: 1.0
 
 train:
-  save_ckpt: true
+  save_ckpt: false
   epochs: 200
-  batch_size: 2
+  batch_size: 8
   lr: 0.0005
   min_lr: 0.000001
   warmup_steps: 100
@@ -82,7 +82,7 @@ train:
   log_every_n_steps: 10
   deterministic: false
   early_stop: true
-  early_stop_patience: 10
+  early_stop_patience: 15
   early_stop_min_delta: 0.0001
 
 logging:

@@ -15,10 +15,22 @@ import pytorch_lightning as pl
 from omegaconf import DictConfig
 
 from spectra.data.synthetic import SyntheticMTLDataset
-from spectra.data.nyuv2.dataset import NYUv2Dataset
+from spectra.data.nyuv2.dataset import NYUv2Dataset, resolve_nyuv2_root
 from spectra.data.clinical.dataset import ICUTrajectoryDataset, ICUSotaDataset, create_sepsis_aware_sampler, robust_collate_fn
 
 logger = logging.getLogger("spectra.datamodule")
+
+
+def _cfg_lookup(cfg: DictConfig, key: str, default=None):
+    """Resolve top-level and nested dataset keys without dropping falsey values."""
+    if key in cfg:
+        return cfg.get(key)
+
+    dataset_cfg = cfg.get("dataset", {})
+    if key in dataset_cfg:
+        return dataset_cfg.get(key)
+
+    return default
 
 
 class SPECTRADataModule(pl.LightningDataModule):
@@ -58,9 +70,9 @@ class SPECTRADataModule(pl.LightningDataModule):
             )
         elif self.dataset_name == "nyuv2":
             # Validate that LMDB data exists before training starts
-            root = self.cfg.get("root") or self.cfg.get("dataset", {}).get("root", "datasets/nyuv2_lmdb")
+            root = _cfg_lookup(self.cfg, "root", "datasets/nyuv2_lmdb")
             from pathlib import Path
-            root_path = Path(root)
+            root_path = resolve_nyuv2_root(root)
             for split in ["train", "val"]:
                 lmdb_path = root_path / split / "data.lmdb"
                 index_path = root_path / f"{split}_index.json"
@@ -87,17 +99,20 @@ class SPECTRADataModule(pl.LightningDataModule):
                 seed=self.cfg.seed + 1,
                 mapping_seed=self.cfg.seed  # Critical: same function/mapping as train
             )
-            
+
         elif self.dataset_name == "nyuv2":
-            root = self.cfg.get("root") or self.cfg.get("dataset", {}).get("root")
-            subset_pct = self.cfg.get("subset_pct") or self.cfg.get("dataset", {}).get("subset_pct", 1.0)
-            normalize_rgb = self.cfg.get("normalize_rgb") or self.cfg.get("dataset", {}).get("normalize_rgb", False)
+            root = _cfg_lookup(self.cfg, "root")
+            subset_pct = _cfg_lookup(self.cfg, "subset_pct", 1.0)
+            subset_seed = _cfg_lookup(self.cfg, "subset_seed", 42)
+            normalize_rgb = _cfg_lookup(self.cfg, "normalize_rgb", False)
+            augmentation = _cfg_lookup(self.cfg, "augmentation", True)
             
             self.train_ds = NYUv2Dataset(
                 root=root,
                 split="train",
-                augmentation=True,
+                augmentation=augmentation,
                 subset_pct=subset_pct,
+                subset_seed=subset_seed,
                 normalize_rgb=normalize_rgb,
             )
             self.val_ds = NYUv2Dataset(
@@ -105,6 +120,7 @@ class SPECTRADataModule(pl.LightningDataModule):
                 split="val",
                 augmentation=False,
                 subset_pct=subset_pct,
+                subset_seed=subset_seed,
                 normalize_rgb=normalize_rgb,
             )
 

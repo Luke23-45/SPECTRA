@@ -267,7 +267,9 @@ def main() -> int:
         for index, stage in enumerate(plan, start=1):
             label = str(stage["label"])
             experiment = str(stage["experiment"])
-            stage_args = list(stage["args"]) + list(extra_hydra_args)
+            stage_args = list(stage["args"])
+            if stage["kind"] == "train":
+                stage_args.extend(extra_hydra_args)
 
             print(f"\n[{index}/{total}] {label}")
             print(f"[handoff] Launching {experiment}")

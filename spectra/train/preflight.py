@@ -10,6 +10,7 @@ from pathlib import Path
 import torch
 import logging
 from omegaconf import DictConfig
+from spectra.data.nyuv2.dataset import resolve_nyuv2_root
 
 logger = logging.getLogger("spectra.preflight")
 
@@ -27,12 +28,19 @@ def preflight_check(cfg: DictConfig, output_dir: Path) -> None:
         if not root:
              errors.append("NYUv2 dataset selected but 'root' directory not defined.")
         else:
-            lmdb_train = Path(root) / "train" / "data.lmdb"
-            lmdb_val   = Path(root) / "val"   / "data.lmdb"
+            resolved_root = resolve_nyuv2_root(root)
+            lmdb_train = resolved_root / "train" / "data.lmdb"
+            lmdb_val   = resolved_root / "val"   / "data.lmdb"
+            index_train = resolved_root / "train_index.json"
+            index_val   = resolved_root / "val_index.json"
             if not lmdb_train.exists():
                 errors.append(f"NYUv2 train LMDB missing: {lmdb_train}\n  → Run: python scripts/execution/experiment_runner.py nyuv2_generate")
             if not lmdb_val.exists():
                 errors.append(f"NYUv2 val LMDB missing: {lmdb_val}\n  → Run: python scripts/execution/experiment_runner.py nyuv2_generate")
+            if not index_train.exists():
+                errors.append(f"NYUv2 train index missing: {index_train}\n  → Run: python scripts/execution/experiment_runner.py nyuv2_generate")
+            if not index_val.exists():
+                errors.append(f"NYUv2 val index missing: {index_val}\n  → Run: python scripts/execution/experiment_runner.py nyuv2_generate")
 
     # 2. Tasks must be defined
     tasks = list(cfg.get("tasks", []))

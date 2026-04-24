@@ -295,4 +295,29 @@ class TestCollation:
         assert len(batch["meta"]["sample_id"]) == B
 
 
+class TestLmdbReadPath:
+    """Verify the loader uses one read transaction per sample."""
+
+    def test_single_read_transaction_per_sample(self, mock_nyuv2_data):
+        from spectra.data.nyuv2 import NYUv2Dataset
+
+        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False)
+        ds._init_lmdb()
+
+        real_env = ds._lmdb_env
+        begin_calls = {"count": 0}
+
+        class EnvProxy:
+            def begin(self, *args, **kwargs):
+                begin_calls["count"] += 1
+                return real_env.begin(*args, **kwargs)
+
+        ds._lmdb_env = EnvProxy()
+        _ = ds[0]
+        real_env.close()
+        ds._lmdb_env = None
+
+        assert begin_calls["count"] == 1
+
+
 # Download utilities mock removed.

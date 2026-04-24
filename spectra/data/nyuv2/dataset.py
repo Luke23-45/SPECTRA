@@ -73,6 +73,24 @@ NUM_CLASSES = 13
 IGNORE_INDEX = 255  # Standard ignore index for CrossEntropyLoss
 
 
+def resolve_nyuv2_root(root: str | Path) -> Path:
+    """
+    Resolve the NYUv2 LMDB root across supported on-disk layouts.
+
+    Supported:
+      1. root/train/data.lmdb + root/train_index.json
+      2. root/data/train/data.lmdb + root/data/train_index.json
+    """
+    root_path = Path(root)
+    candidates = [root_path, root_path / "data"]
+
+    for candidate in candidates:
+        if (candidate / "train").exists() or (candidate / "val").exists():
+            return candidate
+
+    return root_path
+
+
 # =============================================================================
 # CORE DATASET
 # =============================================================================
@@ -124,7 +142,7 @@ class NYUv2Dataset(Dataset):
     ):
         super().__init__()
 
-        self.root = Path(root)
+        self.root = resolve_nyuv2_root(root)
         self.split = "val" if split in ["validation", "val", "test"] else "train"
         self.num_classes = num_classes
         
@@ -198,16 +216,35 @@ class NYUv2Dataset(Dataset):
                 lock=False,
                 readahead=False,
                 meminit=False,
-                subdir=False
+                subdir=False,
+                max_spare_txns=1,
             )
 
-    def _read_bytes(self, key: str) -> bytes:
+    def _read_sample_bytes(self, sample_meta: Dict[str, Any]) -> Tuple[bytes, bytes, bytes, bytes]:
+        """
+        Fetch all modalities for one sample under a single read transaction.
+
+        The previous path opened four independent read transactions per sample.
+        LMDB read transactions are cheap but not free; collapsing them to one
+        materially reduces Python and LMDB overhead in the dataloader hot path.
+        """
         self._init_lmdb()
         with self._lmdb_env.begin(write=False) as txn:
-            data = txn.get(key.encode('ascii'))
-            if data is None:
-                raise KeyError(f"LMDB Key failure: {key}")
-            return data
+            image = txn.get(sample_meta["image_key"].encode("ascii"))
+            label = txn.get(sample_meta["label_key"].encode("ascii"))
+            depth = txn.get(sample_meta["depth_key"].encode("ascii"))
+            normal = txn.get(sample_meta["normal_key"].encode("ascii"))
+
+        if image is None:
+            raise KeyError(f"LMDB Key failure: {sample_meta['image_key']}")
+        if label is None:
+            raise KeyError(f"LMDB Key failure: {sample_meta['label_key']}")
+        if depth is None:
+            raise KeyError(f"LMDB Key failure: {sample_meta['depth_key']}")
+        if normal is None:
+            raise KeyError(f"LMDB Key failure: {sample_meta['normal_key']}")
+
+        return image, label, depth, normal
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         global_idx = self.indices[idx]
@@ -215,23 +252,21 @@ class NYUv2Dataset(Dataset):
         hw = sample_meta["shape_hw"]
 
         # 1. Fetch & Deserialize (Axe v6.6: NASA-Grade Integrity)
+        img_bytes, lbl_bytes, depth_bytes, norm_bytes = self._read_sample_bytes(sample_meta)
+
         # Image (uint8, [H, W, 3])
-        img_bytes = self._read_bytes(sample_meta["image_key"])
         image = np.frombuffer(img_bytes, dtype=np.uint8).reshape(*hw, 3).copy()
         image = torch.from_numpy(np.moveaxis(image, -1, 0)).float() / 255.0
 
         # Label (uint8, [H, W])
-        lbl_bytes = self._read_bytes(sample_meta["label_key"])
         label = np.frombuffer(lbl_bytes, dtype=np.uint8).reshape(*hw).copy()
         label = torch.from_numpy(label).long()
 
         # Depth (float16 -> float32, [H, W, 1])
-        depth_bytes = self._read_bytes(sample_meta["depth_key"])
         depth = np.frombuffer(depth_bytes, dtype=np.float16).reshape(*hw, 1).copy()
         depth = torch.from_numpy(np.moveaxis(depth, -1, 0)).float()
 
         # Normal (float16 -> float32, [H, W, 3])
-        norm_bytes = self._read_bytes(sample_meta["normal_key"])
         normal = np.frombuffer(norm_bytes, dtype=np.float16).reshape(*hw, 3).copy()
         normal = torch.from_numpy(np.moveaxis(normal, -1, 0)).float()
 

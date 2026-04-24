@@ -54,6 +54,16 @@ def test_resolve_nyuv2_methods_and_seeds_defaults():
     assert resolve_seed_sweep(None) == DEFAULT_NYUV2_SEEDS
 
 
+def test_nyuv2_default_root_matches_lmdb_layout():
+    import yaml
+
+    with open("configs/dataset/nyuv2.yaml", "r", encoding="utf-8") as handle:
+        cfg = yaml.safe_load(handle)
+
+    assert cfg["root"] == "datasets/nyuv2_lmdb/data"
+    assert cfg["dataset"]["root"] == "${root}"
+
+
 def test_build_nyuv2_publication_plan_includes_data_prep_and_seed_sweep():
     plan = build_nyuv2_publication_plan(
         methods=["static", "bpgs"],
@@ -72,3 +82,21 @@ def test_build_nyuv2_publication_plan_includes_data_prep_and_seed_sweep():
     assert plan[3]["args"] == ["seed=99"]
     assert plan[4]["experiment"] == "bpgs_nyuv2"
     assert plan[4]["args"] == ["seed=99"]
+
+
+def test_data_prep_stage_args_do_not_include_training_overrides():
+    plan = build_nyuv2_publication_plan(
+        methods=["static"],
+        seeds=[42],
+        include_data_prep=True,
+        data_prep_args=["--force"],
+    )
+
+    data_stage_args = list(plan[0]["args"])
+    training_extra = ["train.batch_size=4", "logging.use_wandb=true"]
+
+    final_data_stage_args = list(data_stage_args)
+    final_train_stage_args = list(plan[1]["args"]) + training_extra
+
+    assert final_data_stage_args == ["--force"]
+    assert final_train_stage_args == ["seed=42", "train.batch_size=4", "logging.use_wandb=true"]

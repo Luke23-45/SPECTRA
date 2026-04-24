@@ -156,13 +156,17 @@ class StatsReservoir:
         self.max_size = max_size
         self.reservoir = []
         self.channels = channels
+        self.rng = np.random.default_rng(42)
 
     def update(self, x_hwc: np.ndarray):
         """Adds a random spatial subset to the reservoir with a memory compaction guard."""
         # Take a random 1% spatial sample
         flat = x_hwc.reshape(-1, self.channels)
         n_points = max(1, len(flat) // 100)
-        indices = np.random.choice(len(flat), n_points, replace=False)
+        # Quantile estimation does not require unique draws. Sampling with
+        # replacement is much cheaper than `np.random.choice(..., replace=False)`
+        # on large flattened images and keeps generation throughput higher.
+        indices = self.rng.integers(0, len(flat), size=n_points)
         self.reservoir.append(flat[indices])
 
         # Memory compaction: if reservoir grows too large, downsample it
@@ -237,7 +241,8 @@ class QualityIngestionEngine:
         # Optimize LMDB for production: MAPASYNC for speed. 
         # Note: writemap=True is disabled for Windows filesystem stability.
         env = lmdb.open(str(lmdb_path), map_size=LMDB_MAP_SIZE, subdir=False, 
-                        map_async=True, writemap=False)
+                        map_async=True, writemap=False, meminit=False,
+                        metasync=False, sync=False)
         self.envs[target_name] = env
         return env
 
