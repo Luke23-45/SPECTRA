@@ -15,6 +15,7 @@ from typing import Dict, List, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def _safe_logit(s_init: float, s_min: float, s_max: float, eps_clip: float = 1e-8) -> float:
@@ -41,7 +42,13 @@ class BPGS(nn.Module):
       s_i = a_i + (b_i - a_i) * sigmoid(theta_i)
       omega_i = exp(-s_i)
       J_net = sum_i 0.5 * stopgrad(omega_i) * L_i
-      J_unc = sum_i [0.5 * omega_i * detach(L_i) + 0.5 * s_i]
+
+    Uncertainty flow supports two mathematically grounded objectives:
+      - ``kendall`` (default): sum_i [0.5 * omega_i * L_i + 0.5 * s_i]
+      - ``log_mse``:          sum_i 0.5 * (s_i - log(L_i + eps_target))^2
+
+    ``log_mse`` removes the competing-term tug-of-war in the uncertainty
+    objective by directly fitting bounded log-variance to the analytic optimum.
     """
 
     def __init__(
@@ -51,13 +58,19 @@ class BPGS(nn.Module):
         s_max: float = 10.0,
         s_init: float = 0.0,
         eps_clip: float = 1e-8,
+        unc_mode: str = "kendall",
+        eps_target: float = 1e-6,
         **kwargs,
     ) -> None:
         super().__init__()
         if num_tasks < 1:
             raise ValueError(f"num_tasks must be positive; got {num_tasks}.")
+        if unc_mode not in {"kendall", "log_mse", "huber_log"}:
+            raise ValueError(f"Unsupported unc_mode '{unc_mode}'. Choose from kendall|log_mse|huber_log.")
 
         self.num_tasks = num_tasks
+        self.unc_mode = unc_mode
+        self.eps_target = eps_target
         self.register_buffer("s_min_v", torch.full((num_tasks,), s_min))
         self.register_buffer("s_max_v", torch.full((num_tasks,), s_max))
 
@@ -81,12 +94,17 @@ class BPGS(nn.Module):
     def uncertainty_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
         """Fiber flow objective for uncertainty parameters."""
         s = self.get_s()
-        precision = torch.exp(-s)
+        losses = torch.stack([loss.detach() for loss in raw_losses]).to(s.dtype)
 
-        total_loss = 0
-        for i, loss in enumerate(raw_losses):
-            total_loss = total_loss + 0.5 * precision[i] * loss.detach() + 0.5 * s[i]
-        return total_loss
+        if self.unc_mode == "kendall":
+            precision = torch.exp(-s)
+            return (0.5 * precision * losses + 0.5 * s).sum()
+
+        targets = torch.log(losses + self.eps_target)
+        if self.unc_mode == "log_mse":
+            return 0.5 * (s - targets).pow(2).sum()
+
+        return F.huber_loss(s, targets, reduction="sum", delta=0.5)
 
     def forward(self, losses: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
@@ -115,7 +133,7 @@ class BPGS(nn.Module):
             s = self.get_s()
             weights = torch.exp(-s)
 
-        stats: Dict[str, float] = {}
+        stats: Dict[str, float] = {"bpgs/unc_mode": float(0 if self.unc_mode == "kendall" else 1)}
         for i in range(self.num_tasks):
             stats[f"bpgs/log_var_{i}"] = s[i].item()
             stats[f"bpgs/weight_{i}"] = weights[i].item()

@@ -330,3 +330,16 @@ The results suggest that method selection should be based on the specific requir
 ---
 
 **Report End**
+
+
+---
+
+## Addendum (2026-04-24): BPGS Math Deep-Dive Plan
+
+A focused synthetic deep-dive was added to isolate uncertainty-math behavior without adding training extras (no EMA, no calibration hacks).
+
+- Script: `scripts/analysis/bpgs_deep_dive.py`
+- Raw sweep outputs: `tmp/bpgs_deep_dive/grid_results.json`
+- Deep-dive report: `logs/reviews/nyuv2_bpgs_math_deep_dive.md`
+
+Key finding from that sweep: direct log-target matching for uncertainty (`unc_mode=log_mse` / `huber_log`) outperforms canonical Kendall-form uncertainty (`unc_mode=kendall`) in the synthetic stress setup, consistent with the competing-term hypothesis.

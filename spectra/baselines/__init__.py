@@ -32,6 +32,8 @@ def build_weighter(cfg):
             s_min=m_cfg.get("s_min", -10.0),
             s_max=m_cfg.get("s_max", 10.0),
             s_init=m_cfg.get("s_init", 0.0),
+            unc_mode=m_cfg.get("unc_mode", "kendall"),
+            eps_target=m_cfg.get("eps_target", 1e-6),
         )
 
     cls = WEIGHTER_REGISTRY.get(name)
