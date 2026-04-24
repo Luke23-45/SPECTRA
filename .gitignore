@@ -153,29 +153,12 @@ cython_debug/
 #  JetBrains IDEs: .idea/ (whole folder)
 .idea/
 idea/
-
+datasets/
 # VS Code
 .vscode/
 ledger_tracker.md
 # Project Specific
 outputs/
-notes__
-sepsis_clinical_28
-docs/
-ry.md
-datasets/
-lightning_logs/
-temp_logs1.md
-logs_bpgs.md
-loss_report.md
-report_main.md
-logs_pcgrad.md
-patches.txt
-# working
-temp_logs2.md
-TRAINING_GUIDE.md
-error.md
-working_
-saturation_analysis_report.md
-create_patches.py
-patches_utf8.txt
+# docs/
+
+
