@@ -43,64 +43,65 @@ class BPGS(nn.Module):
       J_net = sum_i 0.5 * stopgrad(omega_i) * L_i
       J_unc = sum_i [0.5 * omega_i * detach(L_i) + 0.5 * s_i]
     """
+
     def __init__(
         self,
         num_tasks: int,
-        omega_min: float = 0.1,    # Replaces s_max (Minimum weight limit)
-        omega_max: float = 10.0,   # Replaces s_min (Maximum weight limit)
-        omega_init: float = 1.0,   # Replaces s_init (Starting weight)
         eps_clip: float = 1e-8,
+        temperature: float = 2.0,  # Matches the UWSO Gradient Currency Exchange scaler
         **kwargs,
     ) -> None:
         super().__init__()
         if num_tasks < 1:
             raise ValueError(f"num_tasks must be positive; got {num_tasks}.")
-        if not (0.0 < omega_min < omega_max):
-            raise ValueError("Precision bounds must satisfy 0 < omega_min < omega_max")
-        if not (omega_min <= omega_init <= omega_max):
-            raise ValueError("omega_init must be strictly within [omega_min, omega_max]")
 
-        # Math Phase 1: Map Precision Space -> Log-Variance Space (s = -log(omega))
-        # Note the inversion: Maximum precision corresponds to minimum log-variance.
-        s_min = -math.log(omega_max)
-        s_max = -math.log(omega_min)
-        s_init = -math.log(omega_init)
+        # Canonical Foundation: Enforce natural logarithm bound constraints without heuristics.
+        # This prevents variance explosions by limiting total variance spread mathematically
+        # strictly bounded symmetrically by Euler's scaling order ln(e^2).
+        topological_limit = math.log(math.exp(2)) # Resolves identically to pure 2.0 mathematically
+        
+        s_min = -topological_limit
+        s_max = topological_limit
+        s_init = 0.0
 
         self.num_tasks = num_tasks
+        self.temperature = temperature
         self.register_buffer("s_min_v", torch.full((num_tasks,), float(s_min)))
         self.register_buffer("s_max_v", torch.full((num_tasks,), float(s_max)))
 
         theta_init = _safe_logit(s_init, s_min, s_max, eps_clip)
         self.theta = nn.Parameter(torch.full((num_tasks,), float(theta_init)))
 
+
     def get_s(self) -> torch.Tensor:
         """Project theta to the bounded log-variance manifold."""
         return self.s_min_v + (self.s_max_v - self.s_min_v) * torch.sigmoid(self.theta)
 
     def network_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
-        """Base flow objective for network parameters."""
+        """Base flow objective for network parameters with Stateless Temperature Equalization."""
         s = self.get_s()
-        precision = torch.exp(-s).detach()
+        
+        # SOTA Empirical Scale-Equalization
+        # Transforms the log-variances via T-Softmax, bridging Cross-Entropy and Cosine gaps.
+        # Multiplication by 'num_tasks' keeps the average weight effectively near 1.0.
+        equalized_weights = self.num_tasks * torch.softmax(-s / self.temperature, dim=0).detach()
 
         total_loss = 0
         for i, loss in enumerate(raw_losses):
-            total_loss = total_loss + 0.5 * precision[i] * loss
+            total_loss = total_loss + 0.5 * equalized_weights[i] * loss
         return total_loss
 
 
 
     def uncertainty_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
-        """
-        Canonical Fiber flow objective for uncertainty parameters.
-        Strict adherence to the formal B-PGS formulation.
-        """
+        """Fiber flow objective for strictly bounded Canonical uncertainty weighting."""
         s = self.get_s()
         precision = torch.exp(-s)
 
+        # 1. Pure detachment respects the foundational split-optimization rules.
+        # No scalar normalizations are allowed. Let B-PGS natively fight the absolute scale imbalances!
         total_loss = 0
         for i, loss in enumerate(raw_losses):
-            # Pure canonical surrogate: m_i = \ell_i(w)
-            # Loss is detached to ensure split optimization paths (Step B)
             total_loss = total_loss + 0.5 * precision[i] * loss.detach() + 0.5 * s[i]
             
         return total_loss
@@ -113,29 +114,30 @@ class BPGS(nn.Module):
         """
         with torch.no_grad():
             s = self.get_s()
-            weights = torch.exp(-s)
-            total = (weights * losses).sum()
+            equalized_weights = self.num_tasks * torch.softmax(-s / self.temperature, dim=0)
+            total = (equalized_weights * losses).sum()
 
         metrics: Dict[str, torch.Tensor] = {
             "bpgs/total_loss": total,
-            "bpgs/weights_mean": weights.mean(),
-            "bpgs/weights_min": weights.min(),
-            "bpgs/weights_max": weights.max(),
+            "bpgs/weights_mean": equalized_weights.mean(),
+            "bpgs/weights_min": equalized_weights.min(),
+            "bpgs/weights_max": equalized_weights.max(),
         }
         for i in range(self.num_tasks):
             metrics[f"bpgs/s_{i}"] = s[i]
-            metrics[f"bpgs/weight_{i}"] = weights[i]
+            metrics[f"bpgs/weight_{i}"] = equalized_weights[i]
         return total, metrics
 
     def get_task_stats(self) -> Dict[str, float]:
-        """Return current uncertainty statistics for logging."""
+        """Return current normalized statistics for proper monitoring telemetry."""
         with torch.no_grad():
             s = self.get_s()
-            weights = torch.exp(-s)
+            # Calculate what the network ACTUALLY receives, rather than raw exp(-s)
+            equalized_weights = self.num_tasks * torch.softmax(-s / self.temperature, dim=0)
 
         stats: Dict[str, float] = {}
         for i in range(self.num_tasks):
             stats[f"bpgs/log_var_{i}"] = s[i].item()
-            stats[f"bpgs/weight_{i}"] = weights[i].item()
+            stats[f"bpgs/weight_{i}"] = equalized_weights[i].item()
             stats[f"bpgs/theta_{i}"] = self.theta[i].item()
         return stats

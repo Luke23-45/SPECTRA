@@ -29,9 +29,7 @@ def build_weighter(cfg):
         m_cfg = cfg.get("method", {})
         return BPGS(
             num_tasks=len(cfg.tasks),
-            omega_min=m_cfg.get("omega_min", 0.1),
-            omega_max=m_cfg.get("omega_max", 10.0),
-            omega_init=m_cfg.get("omega_init", 1.0),
+            temperature=m_cfg.get("temperature", 2.0),
         )
 
     cls = WEIGHTER_REGISTRY.get(name)

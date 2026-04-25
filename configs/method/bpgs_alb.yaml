@@ -5,9 +5,7 @@ use_alb: true
 
 method:
   name: bpgs_alb
-  omega_min: 0.1
-  omega_max: 10.0
-  omega_init: 1.0
+  temperature: 2.0
   n_expert_layers: 3
   expert_init: orthogonal
   expert_gain: 1.2

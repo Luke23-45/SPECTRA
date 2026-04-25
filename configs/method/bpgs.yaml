@@ -4,9 +4,7 @@ use_alb: false
 
 method:
   name: bpgs
-  omega_min: 0.1   # Minimum weight limit
-  omega_max: 10.0  # Maximum weight limit
-  omega_init: 1.0  # Starting weight
+  temperature: 2.0 # Softmax temperature for stateless scale equalization
 
 module:
   engine:
