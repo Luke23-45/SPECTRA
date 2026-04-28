@@ -58,6 +58,8 @@ def build_optimizer_and_scheduler(module: pl.LightningModule, cfg: DictConfig) -
     )
 
     if is_bpgs:
+        # Canonical optimization path: no artificial multipliers. 
+        # Theta Inertia is solved fundamentally via Step 0 Auto-Calibration.
         lr_unc = cfg.train.lr
         min_lr_ratio_theta = cfg.train.get("min_lr", 1e-6) / cfg.train.lr
 

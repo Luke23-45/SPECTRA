@@ -41,7 +41,6 @@ import os
 import lmdb
 import json
 import logging
-import numpy as np
 import torch
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -246,6 +245,38 @@ class NYUv2Dataset(Dataset):
 
         return image, label, depth, normal
 
+    @staticmethod
+    def _decode_uint8_image(buffer: bytes, hw: List[int]) -> torch.Tensor:
+        height, width = hw
+        return (
+            torch.frombuffer(bytearray(buffer), dtype=torch.uint8)
+            .view(height, width, 3)
+            .permute(2, 0, 1)
+            .contiguous()
+            .to(dtype=torch.float32)
+            .div_(255.0)
+        )
+
+    @staticmethod
+    def _decode_uint8_label(buffer: bytes, hw: List[int]) -> torch.Tensor:
+        height, width = hw
+        return (
+            torch.frombuffer(bytearray(buffer), dtype=torch.uint8)
+            .view(height, width)
+            .to(dtype=torch.long)
+        )
+
+    @staticmethod
+    def _decode_float16_map(buffer: bytes, hw: List[int], channels: int) -> torch.Tensor:
+        height, width = hw
+        return (
+            torch.frombuffer(bytearray(buffer), dtype=torch.float16)
+            .view(height, width, channels)
+            .permute(2, 0, 1)
+            .contiguous()
+            .to(dtype=torch.float32)
+        )
+
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         global_idx = self.indices[idx]
         sample_meta = self.samples[global_idx]
@@ -254,33 +285,18 @@ class NYUv2Dataset(Dataset):
         # 1. Fetch & Deserialize (Axe v6.6: NASA-Grade Integrity)
         img_bytes, lbl_bytes, depth_bytes, norm_bytes = self._read_sample_bytes(sample_meta)
 
-        # Image (uint8, [H, W, 3])
-        image = np.frombuffer(img_bytes, dtype=np.uint8).reshape(*hw, 3).copy()
-        image = torch.from_numpy(np.moveaxis(image, -1, 0)).float() / 255.0
-
-        # Label (uint8, [H, W])
-        label = np.frombuffer(lbl_bytes, dtype=np.uint8).reshape(*hw).copy()
-        label = torch.from_numpy(label).long()
-
-        # Depth (float16 -> float32, [H, W, 1])
-        depth = np.frombuffer(depth_bytes, dtype=np.float16).reshape(*hw, 1).copy()
-        depth = torch.from_numpy(np.moveaxis(depth, -1, 0)).float()
-
-        # Normal (float16 -> float32, [H, W, 3])
-        normal = np.frombuffer(norm_bytes, dtype=np.float16).reshape(*hw, 3).copy()
-        normal = torch.from_numpy(np.moveaxis(normal, -1, 0)).float()
+        image = self._decode_uint8_image(img_bytes, hw)
+        label = self._decode_uint8_label(lbl_bytes, hw)
+        depth = self._decode_float16_map(depth_bytes, hw, channels=1)
+        normal = self._decode_float16_map(norm_bytes, hw, channels=3)
 
         # 2. Safety Checks
-        if torch.isnan(image).any(): image = torch.nan_to_num(image)
-        if torch.isnan(depth).any(): depth = torch.nan_to_num(depth)
-        if torch.isnan(normal).any(): normal = torch.nan_to_num(normal)
+        image = torch.nan_to_num(image)
+        depth = torch.nan_to_num(depth)
+        normal = torch.nan_to_num(normal)
 
         # Label integrity: clamp invalid values to IGNORE_INDEX
-        label = torch.where(
-            (label >= 0) & (label < self.num_classes),
-            label,
-            torch.tensor(IGNORE_INDEX, dtype=label.dtype)
-        )
+        label.masked_fill_(label >= self.num_classes, IGNORE_INDEX)
 
         # 3. Apply Transforms
         image, label, depth, normal = self.transform(image, label, depth, normal)

@@ -159,7 +159,6 @@ datasets/
 ledger_tracker.md
 # Project Specific
 outputs/
-# docs/
-
-
+docs/
+xdev
 scripts/benchmarks

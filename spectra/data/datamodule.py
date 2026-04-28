@@ -33,6 +33,24 @@ def _cfg_lookup(cfg: DictConfig, key: str, default=None):
     return default
 
 
+def _loader_kwargs(dataset_name: str, num_workers: int, cfg: DictConfig) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {
+        "pin_memory": True,
+        "persistent_workers": (num_workers > 0),
+    }
+
+    if num_workers <= 0:
+        return kwargs
+
+    prefetch = cfg.train.get("prefetch_factor", None)
+    if prefetch is None and dataset_name == "nyuv2":
+        prefetch = 4
+    if prefetch is not None:
+        kwargs["prefetch_factor"] = int(prefetch)
+
+    return kwargs
+
+
 class SPECTRADataModule(pl.LightningDataModule):
     """
     Central dispatcher for all SPECTRA benchmarks.
@@ -149,6 +167,7 @@ class SPECTRADataModule(pl.LightningDataModule):
     def train_dataloader(self):
         batch_size = self.cfg.train.batch_size
         num_workers = self.cfg.train.get("num_workers", 4)
+        loader_kwargs = _loader_kwargs(self.dataset_name, num_workers, self.cfg)
         
         # Clinical requires specialized weighted sampler for sepsis oversampling
         if self.dataset_name == "clinical":
@@ -168,9 +187,8 @@ class SPECTRADataModule(pl.LightningDataModule):
                 sampler=sampler,
                 num_workers=num_workers,
                 collate_fn=robust_collate_fn,
-                pin_memory=True,
                 drop_last=True,
-                persistent_workers=(num_workers > 0)
+                **loader_kwargs,
             )
         
         # Others (Vision/Synthetic)
@@ -189,12 +207,13 @@ class SPECTRADataModule(pl.LightningDataModule):
             shuffle=(sampler is None),
             num_workers=num_workers,
             collate_fn=collate_fn,
-            pin_memory=True,
             drop_last=True,
-            persistent_workers=(num_workers > 0)
+            **loader_kwargs,
         )
 
     def val_dataloader(self):
+        num_workers = self.cfg.train.get("num_workers", 4)
+        loader_kwargs = _loader_kwargs(self.dataset_name, num_workers, self.cfg)
         collate_fn = None
         if self.dataset_name == "nyuv2":
             collate_fn = NYUv2Dataset.collate_fn
@@ -207,8 +226,7 @@ class SPECTRADataModule(pl.LightningDataModule):
             self.val_ds,
             batch_size=self.cfg.train.batch_size,
             shuffle=False,
-            num_workers=self.cfg.train.get("num_workers", 4),
+            num_workers=num_workers,
             collate_fn=collate_fn,
-            pin_memory=True,
-            persistent_workers=(self.cfg.train.get("num_workers", 4) > 0)
+            **loader_kwargs,
         )

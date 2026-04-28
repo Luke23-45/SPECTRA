@@ -320,4 +320,27 @@ class TestLmdbReadPath:
         assert begin_calls["count"] == 1
 
 
+class TestDecodePath:
+    """Verify the optimized decode path preserves tensor values."""
+
+    def test_decode_helpers_match_dataset_contract(self, mock_nyuv2_data):
+        from spectra.data.nyuv2 import NYUv2Dataset
+
+        ds = NYUv2Dataset(root=mock_nyuv2_data, split="train", augmentation=False)
+        sample_meta = ds.samples[0]
+        img_bytes, lbl_bytes, depth_bytes, norm_bytes = ds._read_sample_bytes(sample_meta)
+
+        image = ds._decode_uint8_image(img_bytes, sample_meta["shape_hw"])
+        label = ds._decode_uint8_label(lbl_bytes, sample_meta["shape_hw"])
+        depth = ds._decode_float16_map(depth_bytes, sample_meta["shape_hw"], channels=1)
+        normal = ds._decode_float16_map(norm_bytes, sample_meta["shape_hw"], channels=3)
+
+        sample = ds[0]
+
+        assert torch.allclose(image, sample["input"])
+        assert torch.equal(label.masked_fill(label >= ds.num_classes, 255), sample["targets"]["segmentation"])
+        assert torch.allclose(depth, sample["targets"]["depth"])
+        assert torch.allclose(normal, sample["targets"]["normals"])
+
+
 # Download utilities mock removed.

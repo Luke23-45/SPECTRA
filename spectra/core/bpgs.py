@@ -17,20 +17,6 @@ import torch
 import torch.nn as nn
 
 
-def _safe_logit(s_init: float, s_min: float, s_max: float, eps_clip: float = 1e-8) -> float:
-    """Safely compute the inverse initialization for the sigmoid chart."""
-    if s_min >= s_max:
-        raise ValueError(f"s_min must be strictly less than s_max; got {s_min} >= {s_max}.")
-    if not (s_min <= s_init <= s_max):
-        raise ValueError(
-            f"s_init must lie in [s_min, s_max]; got s_init={s_init}, bounds=({s_min}, {s_max})."
-        )
-    if not (0.0 < eps_clip < 0.5):
-        raise ValueError(f"eps_clip must lie in (0, 0.5); got {eps_clip}.")
-
-    p = (s_init - s_min) / (s_max - s_min)
-    p = max(eps_clip, min(1.0 - eps_clip, p))
-    return math.log(p / (1.0 - p))
 
 
 class BPGS(nn.Module):
@@ -54,48 +40,88 @@ class BPGS(nn.Module):
         super().__init__()
         if num_tasks < 1:
             raise ValueError(f"num_tasks must be positive; got {num_tasks}.")
-
-        # Canonical Foundation: Enforce natural logarithm bound constraints without heuristics.
-        # This prevents variance explosions by limiting total variance spread mathematically
-        # strictly bounded symmetrically by Euler's scaling order ln(e^2).
-        topological_limit = math.log(math.exp(2)) # Resolves identically to pure 2.0 mathematically
-        
-        s_min = -topological_limit
-        s_max = topological_limit
-        s_init = 0.0
-
         self.num_tasks = num_tasks
         self.temperature = temperature
-        self.register_buffer("s_min_v", torch.full((num_tasks,), float(s_min)))
-        self.register_buffer("s_max_v", torch.full((num_tasks,), float(s_max)))
 
-        theta_init = _safe_logit(s_init, s_min, s_max, eps_clip)
-        self.theta = nn.Parameter(torch.full((num_tasks,), float(theta_init)))
+        # SVAM Topological Limit via Samuelson's Inequality: 
+        # Mathematically guarantees non-saturation for any number of tasks.
+        # Max Z-score for T tasks is exactly sqrt(T-1).
+        self.topological_limit = math.sqrt(num_tasks - 1) + 0.1 
+        self.register_buffer("last_mu", torch.zeros(1))
+        self.register_buffer("last_sigma", torch.ones(1))
+        
+        self.theta = nn.Parameter(torch.zeros(num_tasks))
+        self._calibrated = False
+
+    def auto_calibrate(self, raw_losses: List[torch.Tensor]) -> None:
+        """
+        NASA-Grade Initialization:
+        Analytically project the B-PGS manifold to the physical loss landscape on Step 0.
+        Eliminates 'Theta Inertia' without needing hyperparameter hacks.
+        """
+        with torch.no_grad():
+            detached_losses = torch.stack([l.detach() for l in raw_losses])
+            log_L = torch.log(detached_losses.clamp(min=1e-8))
+            mu = log_L.mean()
+            sigma = log_L.std(unbiased=False).clamp(min=1e-4)
+
+            for i, l in enumerate(raw_losses):
+                opt_s = torch.log(l.clamp(min=1e-8))
+                
+                # Project to Z-space
+                Z_target = (opt_s - mu) / sigma
+                Z_bounded = torch.clamp(Z_target, -self.topological_limit, self.topological_limit)
+                
+                # Inverse sigmoid to calculate the exact theta
+                sig_val = (Z_bounded + self.topological_limit) / (2 * self.topological_limit)
+                sig_val = torch.clamp(sig_val, 1e-4, 1.0 - 1e-4)
+                
+                self.theta.data[i] = -torch.log(1.0 / sig_val - 1.0)
 
 
-    def get_s(self) -> torch.Tensor:
-        """Project theta to the bounded log-variance manifold."""
-        return self.s_min_v + (self.s_max_v - self.s_min_v) * torch.sigmoid(self.theta)
+    def get_s(self, raw_losses=None) -> torch.Tensor:
+        """Project theta to the bounded log-variance manifold using SVAM."""
+        if raw_losses is not None:
+            if isinstance(raw_losses, torch.Tensor):
+                detached_losses = raw_losses.detach()
+            else:
+                detached_losses = torch.stack([l.detach() for l in raw_losses])
+            log_L = torch.log(detached_losses.clamp(min=1e-8))
+            mu = log_L.mean()
+            sigma = log_L.std(unbiased=False).clamp(min=1e-4)
+            self.last_mu[0] = mu
+            self.last_sigma[0] = sigma
+        else:
+            mu = self.last_mu[0]
+            sigma = self.last_sigma[0]
+
+        Z = self.topological_limit * (2 * torch.sigmoid(self.theta) - 1.0)
+        return mu + Z * sigma
 
     def network_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
         """Base flow objective for network parameters with Stateless Temperature Equalization."""
-        s = self.get_s()
+        s = self.get_s(raw_losses)
         
         # SOTA Empirical Scale-Equalization
-        # Transforms the log-variances via T-Softmax, bridging Cross-Entropy and Cosine gaps.
-        # Multiplication by 'num_tasks' keeps the average weight effectively near 1.0.
-        equalized_weights = self.num_tasks * torch.softmax(-s / self.temperature, dim=0).detach()
+        # To perfectly align with UWSO (which uses Softmax((1/L) / T)),
+        # we map our Bayesian precision (exp(-s)) into the Softmax.
+        # We drop 'num_tasks' and '0.5' to match UWSO's sum=1.0 weighting scale.
+        equalized_weights = torch.softmax(torch.exp(-s) / self.temperature, dim=0).detach()
 
         total_loss = 0
         for i, loss in enumerate(raw_losses):
-            total_loss = total_loss + 0.5 * equalized_weights[i] * loss
+            total_loss = total_loss + equalized_weights[i] * loss
         return total_loss
 
 
 
     def uncertainty_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
         """Fiber flow objective for strictly bounded Canonical uncertainty weighting."""
-        s = self.get_s()
+        if getattr(self, "_calibrated", False) is False:
+            self.auto_calibrate(raw_losses)
+            self._calibrated = True
+
+        s = self.get_s(raw_losses)
         precision = torch.exp(-s)
 
         # 1. Pure detachment respects the foundational split-optimization rules.
@@ -113,8 +139,8 @@ class BPGS(nn.Module):
         The active optimization path uses `network_loss` and `uncertainty_loss`.
         """
         with torch.no_grad():
-            s = self.get_s()
-            equalized_weights = self.num_tasks * torch.softmax(-s / self.temperature, dim=0)
+            s = self.get_s(losses)
+            equalized_weights = torch.softmax(torch.exp(-s) / self.temperature, dim=0)
             total = (equalized_weights * losses).sum()
 
         metrics: Dict[str, torch.Tensor] = {
@@ -133,7 +159,7 @@ class BPGS(nn.Module):
         with torch.no_grad():
             s = self.get_s()
             # Calculate what the network ACTUALLY receives, rather than raw exp(-s)
-            equalized_weights = self.num_tasks * torch.softmax(-s / self.temperature, dim=0)
+            equalized_weights = torch.softmax(torch.exp(-s) / self.temperature, dim=0)
 
         stats: Dict[str, float] = {}
         for i in range(self.num_tasks):

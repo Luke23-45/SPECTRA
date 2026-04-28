@@ -70,7 +70,7 @@ tasks:
 
 train:
   save_ckpt: false
-  epochs: 100
+  epochs: 120
   batch_size: 8
   lr: 0.0005
   min_lr: 0.000001
@@ -78,7 +78,8 @@ train:
   weight_decay: 0.0001
   grad_clip: 1.0
   precision: 32
-  num_workers: 2
+  num_workers: 4
+  prefetch_factor: 4
   log_every_n_steps: 10
   deterministic: false
   early_stop: true
