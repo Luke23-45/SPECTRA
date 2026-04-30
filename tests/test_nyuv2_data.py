@@ -37,7 +37,7 @@ def mock_nyuv2_data():
         split_dir.mkdir(parents=True, exist_ok=True)
         
         lmdb_path = split_dir / "data.lmdb"
-        env = lmdb.open(str(lmdb_path), map_size=10**8, subdir=False)
+        env = lmdb.open(str(lmdb_path), map_size=2 * 10**7, subdir=False)
         
         episodes = []
         with env.begin(write=True) as txn:
@@ -330,17 +330,116 @@ class TestDecodePath:
         sample_meta = ds.samples[0]
         img_bytes, lbl_bytes, depth_bytes, norm_bytes = ds._read_sample_bytes(sample_meta)
 
-        image = ds._decode_uint8_image(img_bytes, sample_meta["shape_hw"])
+        image = ds._decode_uint8_image(img_bytes, sample_meta["shape_hw"], layout=ds.image_layout)
         label = ds._decode_uint8_label(lbl_bytes, sample_meta["shape_hw"])
-        depth = ds._decode_float16_map(depth_bytes, sample_meta["shape_hw"], channels=1)
-        normal = ds._decode_float16_map(norm_bytes, sample_meta["shape_hw"], channels=3)
+        depth = ds._decode_float16_map(depth_bytes, sample_meta["shape_hw"], channels=1, layout=ds.depth_layout)
+        normal = ds._decode_float16_map(norm_bytes, sample_meta["shape_hw"], channels=3, layout=ds.normal_layout)
 
         sample = ds[0]
 
         assert torch.allclose(image, sample["input"])
-        assert torch.equal(label.masked_fill(label >= ds.num_classes, 255), sample["targets"]["segmentation"])
+        assert torch.equal(label.masked_fill(label >= ds.num_classes, 255).long(), sample["targets"]["segmentation"])
         assert torch.allclose(depth, sample["targets"]["depth"])
         assert torch.allclose(normal, sample["targets"]["normals"])
+
+    def test_decode_helpers_support_regenerated_chw_layout(self, tmp_path):
+        from spectra.data.nyuv2 import NYUv2Dataset
+
+        root = tmp_path / "nyuv2_chw"
+        split_dir = root / "train"
+        split_dir.mkdir(parents=True, exist_ok=True)
+
+        image_hwc = (np.random.rand(MOCK_H, MOCK_W, 3) * 255.0).astype(np.uint8)
+        label = np.random.randint(0, 13, size=(MOCK_H, MOCK_W), dtype=np.uint8)
+        depth_hwc = (np.random.rand(MOCK_H, MOCK_W, 1) * 5.0).astype(np.float32)
+        normal_hwc = np.random.randn(MOCK_H, MOCK_W, 3).astype(np.float32)
+        normal_hwc = normal_hwc / np.maximum(np.linalg.norm(normal_hwc, axis=-1, keepdims=True), 1e-6)
+
+        image_chw = np.ascontiguousarray(np.transpose(image_hwc, (2, 0, 1)))
+        depth_chw = np.ascontiguousarray(np.transpose(depth_hwc, (2, 0, 1))).astype(np.float16)
+        normal_chw = np.ascontiguousarray(np.transpose(normal_hwc, (2, 0, 1))).astype(np.float16)
+
+        env = lmdb.open(str(split_dir / "data.lmdb"), map_size=2 * 10**7, subdir=False)
+        with env.begin(write=True) as txn:
+            txn.put(b"img_0", image_chw.tobytes())
+            txn.put(b"lbl_0", label.tobytes())
+            txn.put(b"dep_0", depth_chw.tobytes())
+            txn.put(b"nrm_0", normal_chw.tobytes())
+        env.close()
+
+        manifest = {
+            "metadata": {
+                "storage": {
+                    "image_layout": "chw",
+                    "depth_layout": "chw",
+                    "normal_layout": "chw",
+                    "label_dtype": "uint8",
+                },
+                "sanitized": {
+                    "runtime_safe_finite": True,
+                },
+            },
+            "episodes": [
+                {
+                    "shape_hw": [MOCK_H, MOCK_W],
+                    "image_key": "img_0",
+                    "label_key": "lbl_0",
+                    "depth_key": "dep_0",
+                    "normal_key": "nrm_0",
+                }
+            ],
+        }
+        with open(root / "train_index.json", "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle)
+        with open(root / "val_index.json", "w", encoding="utf-8") as handle:
+            json.dump({"metadata": manifest["metadata"], "episodes": []}, handle)
+        (root / "val").mkdir(parents=True, exist_ok=True)
+        lmdb.open(str(root / "val" / "data.lmdb"), map_size=2 * 10**7, subdir=False).close()
+
+        ds = NYUv2Dataset(root=str(root), split="train", augmentation=False)
+        sample = ds[0]
+
+        expected_image = torch.from_numpy(np.transpose(image_hwc, (2, 0, 1))).float().div(255.0)
+        expected_depth = torch.from_numpy(depth_chw.astype(np.float32))
+        expected_normal = torch.from_numpy(normal_chw.astype(np.float32))
+
+        assert torch.allclose(sample["input"], expected_image)
+        assert torch.allclose(sample["targets"]["depth"], expected_depth, atol=1e-3)
+        assert torch.allclose(sample["targets"]["normals"], expected_normal, atol=1e-3)
+        assert sample["targets"]["segmentation"].dtype == torch.int64
+
+
+class TestBatchTransforms:
+    """Verify batch-level augmentation preserves NYUv2 invariants."""
+
+    def test_batch_horizontal_flip_negates_normal_x_and_updates_mask(self):
+        from spectra.data.nyuv2.transforms import NYUv2BatchTrainTransform
+
+        batch = {
+            "input": torch.randn(2, 3, 10, 10),
+            "targets": {
+                "segmentation": torch.randint(0, 13, (2, 10, 10), dtype=torch.long),
+                "depth": torch.ones(2, 1, 10, 10),
+                "normals": torch.randn(2, 3, 10, 10),
+            },
+            "meta": {
+                "depth_mask": torch.ones(2, 1, 10, 10),
+                "sample_id": ["a", "b"],
+            },
+        }
+        batch["targets"]["depth"][0, :, :2, :2] = 0.0
+        original_normals = batch["targets"]["normals"].clone()
+
+        transform = NYUv2BatchTrainTransform(scales=[1.0], flip_p=1.0, normalize_rgb=False)
+        out = transform(batch)
+
+        expected_x = -torch.flip(original_normals[:, 0:1], dims=[3])
+        expected_yz = torch.flip(original_normals[:, 1:], dims=[3])
+
+        assert torch.allclose(out["targets"]["normals"][:, 0:1], expected_x, atol=1e-6)
+        assert torch.allclose(out["targets"]["normals"][:, 1:], expected_yz, atol=1e-6)
+        assert out["targets"]["segmentation"].dtype == torch.int64
+        assert torch.equal(out["meta"]["depth_mask"], (out["targets"]["depth"] > 0.0).float())
 
 
 # Download utilities mock removed.

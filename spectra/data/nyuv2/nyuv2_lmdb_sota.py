@@ -305,8 +305,13 @@ class QualityIngestionEngine:
                 lbl = np.where(lbl < NUM_CLASSES, lbl, IGNORE_INDEX).astype(np.uint8)
                 
                 # Cast to high-fidelity storage formats
+                img_chw = np.ascontiguousarray(np.transpose(img, (2, 0, 1)))
+                depth_chw = np.ascontiguousarray(np.transpose(depth, (2, 0, 1)))
+                norm_chw = np.ascontiguousarray(np.transpose(norm, (2, 0, 1)))
                 depth_fp16 = depth.astype(np.float16)
                 norm_fp16 = norm.astype(np.float16)
+                depth_chw_fp16 = depth_chw.astype(np.float16)
+                norm_chw_fp16 = norm_chw.astype(np.float16)
 
                 # --- 3. STATISTICS & RESERVOIR (Train Only) ---
                 if target_name == "train":
@@ -328,10 +333,10 @@ class QualityIngestionEngine:
                     "nrm": f"{target_name}_{i}_nrm"
                 }
                 
-                txn.put(keys["img"].encode('ascii'), img.tobytes())
+                txn.put(keys["img"].encode('ascii'), img_chw.tobytes())
                 txn.put(keys["lbl"].encode('ascii'), lbl.tobytes())
-                txn.put(keys["dpt"].encode('ascii'), depth_fp16.tobytes())
-                txn.put(keys["nrm"].encode('ascii'), norm_fp16.tobytes())
+                txn.put(keys["dpt"].encode('ascii'), depth_chw_fp16.tobytes())
+                txn.put(keys["nrm"].encode('ascii'), norm_chw_fp16.tobytes())
                 
                 self.indices[target_name].append({
                     "idx": i,
@@ -371,6 +376,15 @@ class QualityIngestionEngine:
 
         metadata = {
             "version": "SPECTRA-NYUv2-LMDB-v6.1-AXE",
+            "storage": {
+                "image_layout": "chw",
+                "depth_layout": "chw",
+                "normal_layout": "chw",
+                "label_dtype": "uint8",
+            },
+            "sanitized": {
+                "runtime_safe_finite": True,
+            },
             "stats": {
                 "image": {
                     "mean": img_m.tolist(), "std": img_s.tolist(),

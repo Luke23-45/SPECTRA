@@ -148,7 +148,7 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
-# logs
+logs/
 # PyCharm
 #  JetBrains IDEs: .idea/ (whole folder)
 .idea/
@@ -159,6 +159,7 @@ datasets/
 ledger_tracker.md
 # Project Specific
 outputs/
+logs
 docs/
 xdev
 scripts/benchmarks

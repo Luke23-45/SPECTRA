@@ -51,6 +51,17 @@ def _loader_kwargs(dataset_name: str, num_workers: int, cfg: DictConfig) -> Dict
     return kwargs
 
 
+def _use_nyuv2_batch_augmentation(cfg: DictConfig) -> bool:
+    mode = _cfg_lookup(cfg, "batch_augmentation", "disabled")
+    if mode == "disabled":
+        return False
+    if mode == "cpu":
+        return True
+    if mode == "cuda":
+        return torch.cuda.is_available()
+    raise ValueError(f"Unsupported NYUv2 batch_augmentation mode: {mode}")
+
+
 class SPECTRADataModule(pl.LightningDataModule):
     """
     Central dispatcher for all SPECTRA benchmarks.
@@ -124,14 +135,15 @@ class SPECTRADataModule(pl.LightningDataModule):
             subset_seed = _cfg_lookup(self.cfg, "subset_seed", 42)
             normalize_rgb = _cfg_lookup(self.cfg, "normalize_rgb", False)
             augmentation = _cfg_lookup(self.cfg, "augmentation", True)
+            use_batch_aug = _use_nyuv2_batch_augmentation(self.cfg)
             
             self.train_ds = NYUv2Dataset(
                 root=root,
                 split="train",
-                augmentation=augmentation,
+                augmentation=(augmentation and not use_batch_aug),
                 subset_pct=subset_pct,
                 subset_seed=subset_seed,
-                normalize_rgb=normalize_rgb,
+                normalize_rgb=(normalize_rgb and not use_batch_aug),
             )
             self.val_ds = NYUv2Dataset(
                 root=root,

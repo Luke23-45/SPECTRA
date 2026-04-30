@@ -166,6 +166,13 @@ class NYUv2Dataset(Dataset):
         # Axe v6.6: Global stats are now inside "metadata"
         self.metadata = self.manifest.get("metadata", {})
         self.stats = self.metadata.get("stats", {})
+        self.storage = self.metadata.get("storage", {})
+        self.sanitized = self.metadata.get("sanitized", {})
+        self.image_layout = self.storage.get("image_layout", "hwc")
+        self.depth_layout = self.storage.get("depth_layout", "hwc")
+        self.normal_layout = self.storage.get("normal_layout", "hwc")
+        self.label_dtype = self.storage.get("label_dtype", "uint8")
+        self.skip_runtime_nan_sanitize = bool(self.sanitized.get("runtime_safe_finite", False))
         
         if self.data_len == 0:
             logger.warning(f"[NYUv2-Axe] Split {self.split} index is EMPTY.")
@@ -246,36 +253,29 @@ class NYUv2Dataset(Dataset):
         return image, label, depth, normal
 
     @staticmethod
-    def _decode_uint8_image(buffer: bytes, hw: List[int]) -> torch.Tensor:
+    def _decode_uint8_image(buffer: bytes, hw: List[int], layout: str = "hwc") -> torch.Tensor:
         height, width = hw
-        return (
-            torch.frombuffer(bytearray(buffer), dtype=torch.uint8)
-            .view(height, width, 3)
-            .permute(2, 0, 1)
-            .contiguous()
-            .to(dtype=torch.float32)
-            .div_(255.0)
-        )
+        base = torch.frombuffer(buffer, dtype=torch.uint8)
+        if layout == "chw":
+            image = base.view(3, height, width)
+        else:
+            image = base.view(height, width, 3).permute(2, 0, 1).contiguous()
+        return image.to(dtype=torch.float32).div_(255.0)
 
     @staticmethod
     def _decode_uint8_label(buffer: bytes, hw: List[int]) -> torch.Tensor:
         height, width = hw
-        return (
-            torch.frombuffer(bytearray(buffer), dtype=torch.uint8)
-            .view(height, width)
-            .to(dtype=torch.long)
-        )
+        return torch.frombuffer(buffer, dtype=torch.uint8).view(height, width)
 
     @staticmethod
-    def _decode_float16_map(buffer: bytes, hw: List[int], channels: int) -> torch.Tensor:
+    def _decode_float16_map(buffer: bytes, hw: List[int], channels: int, layout: str = "hwc") -> torch.Tensor:
         height, width = hw
-        return (
-            torch.frombuffer(bytearray(buffer), dtype=torch.float16)
-            .view(height, width, channels)
-            .permute(2, 0, 1)
-            .contiguous()
-            .to(dtype=torch.float32)
-        )
+        base = torch.frombuffer(buffer, dtype=torch.float16)
+        if layout == "chw":
+            tensor = base.view(channels, height, width)
+        else:
+            tensor = base.view(height, width, channels).permute(2, 0, 1).contiguous()
+        return tensor.to(dtype=torch.float32)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         global_idx = self.indices[idx]
@@ -285,17 +285,18 @@ class NYUv2Dataset(Dataset):
         # 1. Fetch & Deserialize (Axe v6.6: NASA-Grade Integrity)
         img_bytes, lbl_bytes, depth_bytes, norm_bytes = self._read_sample_bytes(sample_meta)
 
-        image = self._decode_uint8_image(img_bytes, hw)
+        image = self._decode_uint8_image(img_bytes, hw, layout=self.image_layout)
         label = self._decode_uint8_label(lbl_bytes, hw)
-        depth = self._decode_float16_map(depth_bytes, hw, channels=1)
-        normal = self._decode_float16_map(norm_bytes, hw, channels=3)
+        depth = self._decode_float16_map(depth_bytes, hw, channels=1, layout=self.depth_layout)
+        normal = self._decode_float16_map(norm_bytes, hw, channels=3, layout=self.normal_layout)
 
         # 2. Safety Checks
-        image = torch.nan_to_num(image)
-        depth = torch.nan_to_num(depth)
-        normal = torch.nan_to_num(normal)
+        if not self.skip_runtime_nan_sanitize:
+            depth = torch.nan_to_num(depth)
+            normal = torch.nan_to_num(normal)
 
-        # Label integrity: clamp invalid values to IGNORE_INDEX
+        # Label integrity: convert to int64 BEFORE masked_fill_ to avoid uint8 truncation
+        label = label.to(dtype=torch.long)
         label.masked_fill_(label >= self.num_classes, IGNORE_INDEX)
 
         # 3. Apply Transforms

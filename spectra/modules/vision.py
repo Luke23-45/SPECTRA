@@ -22,6 +22,7 @@ from spectra.evaluation.metrics import (
     NormalMetrics
 )
 from spectra.utils.optimizer import build_optimizer_and_scheduler
+from spectra.data.nyuv2.transforms import NYUv2BatchTrainTransform
 import logging
 
 logger = logging.getLogger("spectra.vision")
@@ -43,6 +44,15 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
         method_name = cfg.get("method_name") or cfg.get("method", {}).get("name")
         self.is_pcgrad = (method_name == "pcgrad")
         self.is_bpgs = (method_name in ("bpgs", "bpgs_alb"))
+        batch_aug_mode = cfg.get("batch_augmentation", cfg.get("dataset", {}).get("batch_augmentation", "disabled"))
+        if (cfg.get("dataset_name") or cfg.get("dataset", {}).get("name")) == "nyuv2" and batch_aug_mode != "disabled":
+            self.batch_train_transform = NYUv2BatchTrainTransform(
+                normalize_rgb=cfg.get("normalize_rgb", cfg.get("dataset", {}).get("normalize_rgb", False))
+            )
+            self.batch_augmentation_mode = batch_aug_mode
+        else:
+            self.batch_train_transform = None
+            self.batch_augmentation_mode = "disabled"
         
         # 3. Tasks & Spatial Metrics
         self.task_names = [task.name for task in cfg.tasks]
@@ -77,6 +87,21 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
 
     def forward(self, batch: Dict) -> Dict:
         return self.model(batch["input"])
+
+    def on_after_batch_transfer(self, batch: Dict, dataloader_idx: int) -> Dict:
+        if self.batch_train_transform is None:
+            return batch
+        if not getattr(self.trainer, "training", False):
+            return batch
+
+        inputs = batch.get("input")
+        if not isinstance(inputs, torch.Tensor):
+            return batch
+
+        if self.batch_augmentation_mode == "cuda" and not inputs.is_cuda:
+            return batch
+
+        return self.batch_train_transform(batch)
 
     def training_step(self, batch: Dict, batch_idx: int) -> torch.Tensor:
         predictions = self(batch)

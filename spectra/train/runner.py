@@ -131,6 +131,9 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
         loggers.append(wandb_logger)
 
     # 8. Trainer Configuration
+    if torch.cuda.is_available() and not cfg.train.get("deterministic", False):
+        torch.backends.cudnn.benchmark = True
+
     gradient_clip_val = cfg.train.get("grad_clip", 1.0)
     if not getattr(model, "automatic_optimization", True):
         gradient_clip_val = None # Managed by manual engine

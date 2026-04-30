@@ -246,6 +246,110 @@ class NYUv2TrainTransform:
         return image, label, depth, normal
 
 
+class NYUv2BatchTrainTransform:
+    """
+    Batch-level NYUv2 augmentation for execution after device transfer.
+
+    Uses F.affine_grid + F.grid_sample to apply per-sample random scale-crop
+    and horizontal flip in a single batched CUDA operation, eliminating the
+    per-sample loop that would otherwise issue N separate kernel launches.
+
+    Coordinate math (align_corners=True convention):
+        Crop region [i:i+h, j:j+w] in input maps to full output [0:H, 0:W].
+        Affine theta:
+            sx = w_crop / W          sy = h_crop / H
+            tx = (2*j + w_crop)/W - 1   ty = (2*i + h_crop)/H - 1
+        Horizontal flip integrated by negating sx and tx.
+    """
+
+    def __init__(
+        self,
+        scales: Optional[List[float]] = None,
+        flip_p: float = 0.5,
+        normalize_rgb: bool = False,
+    ):
+        self.scales = scales or [1.0, 1.2, 1.5]
+        self.flip_p = flip_p
+        self.normalize = ImageNetNormalize() if normalize_rgb else None
+
+    def __call__(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        image = batch["input"]                           # (B, 3, H, W)
+        label = batch["targets"]["segmentation"]          # (B, H, W) long
+        depth = batch["targets"]["depth"]                 # (B, 1, H, W) float
+        normal = batch["targets"]["normals"]              # (B, 3, H, W) float
+
+        B, _, H, W = image.shape
+        device = image.device
+
+        # --- 1. Per-sample random parameters (vectorized) ---
+        scale_idx = torch.randint(len(self.scales), (B,), device=device)
+        scales_b = torch.tensor(self.scales, device=device, dtype=torch.float32)[scale_idx]  # (B,)
+        flip_mask = torch.rand(B, device=device) < self.flip_p                              # (B,)
+
+        # --- 2. Crop geometry ---
+        h_crop = (H / scales_b).long().clamp(max=H)       # (B,)
+        w_crop = (W / scales_b).long().clamp(max=W)       # (B,)
+
+        max_i = (H - h_crop).clamp(min=0)
+        max_j = (W - w_crop).clamp(min=0)
+        i_off = (torch.rand(B, device=device) * (max_i + 1).float()).long().clamp(max=max_i)
+        j_off = (torch.rand(B, device=device) * (max_j + 1).float()).long().clamp(max=max_j)
+
+        # --- 3. Build affine theta (B, 2, 3) ---
+        sx = w_crop.float() / W
+        sy = h_crop.float() / H
+        tx = (2.0 * j_off.float() + w_crop.float()) / W - 1.0
+        ty = (2.0 * i_off.float() + h_crop.float()) / H - 1.0
+
+        # Integrate horizontal flip: negate sx and tx for flipped samples
+        flip_sign = torch.where(flip_mask, -1.0, 1.0).to(dtype=sx.dtype)
+        sx = sx * flip_sign
+        tx = tx * flip_sign
+
+        zeros = torch.zeros_like(sx)
+        theta = torch.stack([
+            torch.stack([sx, zeros, tx], dim=1),
+            torch.stack([zeros, sy, ty], dim=1),
+        ], dim=1)  # (B, 2, 3)
+
+        # --- 4. Batched grid_sample ---
+        grid = F.affine_grid(theta, image.shape, align_corners=True)  # (B, H, W, 2)
+
+        # Image: bilinear
+        image = F.grid_sample(image, grid, mode='bilinear', align_corners=True, padding_mode='border')
+
+        # Label: nearest (add channel dim, convert back to long)
+        label = F.grid_sample(
+            label.unsqueeze(1).float(), grid, mode='nearest', align_corners=True, padding_mode='border'
+        ).squeeze(1).to(dtype=torch.long)
+
+        # Depth: nearest + metric scale correction
+        depth = F.grid_sample(depth, grid, mode='nearest', align_corners=True, padding_mode='border')
+        depth = depth / scales_b.view(B, 1, 1, 1)
+
+        # Normals: bilinear + renormalize
+        normal = F.grid_sample(normal, grid, mode='bilinear', align_corners=True, padding_mode='border')
+        mag = normal.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        normal = normal / mag
+
+        # Negate x-component of normals for horizontally flipped samples
+        if flip_mask.any():
+            flip_idx = flip_mask.nonzero(as_tuple=True)[0]
+            normal[flip_idx, 0, :, :] = -normal[flip_idx, 0, :, :]
+
+        # --- 5. Write back ---
+        batch["input"] = image
+        batch["targets"]["segmentation"] = label
+        batch["targets"]["depth"] = depth
+        batch["targets"]["normals"] = normal
+        batch["meta"]["depth_mask"] = (depth > 0.0).float()
+
+        if self.normalize is not None:
+            batch["input"] = self.normalize(batch["input"])
+
+        return batch
+
+
 class NYUv2TestTransform:
     """
     Test/validation transform — no augmentation.
