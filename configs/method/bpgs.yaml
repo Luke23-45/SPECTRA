@@ -4,8 +4,8 @@ use_alb: false
 
 method:
   name: bpgs
-  temperature: 2.0 # Softmax temperature for precision-softmax scale equalization
-  kappa: 0.3       # Anti-Kendall exponent: shifts equilibrium from UWSO to hard-task mining
+  temperature: 2.0 # Retained for compatibility (not used in network_loss)
+  kappa: 0.1       # Anti-Kendall exponent: mild hard-task focus (κ=0 is Kendall, κ=0.1 is near-balanced)
 
 module:
   engine:
