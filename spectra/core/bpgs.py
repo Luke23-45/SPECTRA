@@ -3,21 +3,21 @@ spectra/core/bpgs.py
 --------------------
 Canonical B-PGS v2 implementation for the active research path.
 
-Three root-cause fixes over v1:
-  1. ANTI-KENDALL UNCERTAINTY: Replace m with m^(-κ) in the uncertainty
-     objective. This shifts the equilibrium from s*=log(L) (which converges
-     to UWSO) to s*=-κ·log(L) (which favors hard tasks). κ=0 recovers
-     the old Kendall equilibrium; κ>0 provides the anti-Kendall incentive.
+Root-cause fix over v1:
+  ANTI-KENDALL UNCERTAINTY: Replace m with m^(-κ) in the uncertainty
+  objective. This shifts the equilibrium from s*=log(L) (which converges
+  to UWSO) to s*=-κ·log(L) (which favors hard tasks). κ=0 recovers
+  the old Kendall equilibrium; κ>0 provides the anti-Kendall incentive.
 
-  2. UNNORMALIZED PRECISION WEIGHTING: Remove softmax from the network
-     loss. Use J_net = Σ stopgrad(exp(-s_i)) * L_i instead of softmax.
-     This restores Kendall's equal-gradient property (weight * loss = const)
-     while the bounded chart prevents gradient explosion. With anti-Kendall,
-     the effective gradient becomes L^(κ+1)/ΣL^κ — mild hard-task focus.
+  At the anti-Kendall equilibrium, network weights become:
+    α_i = softmax(exp(-s_i*) / T) = softmax(L_i^κ / T)
+  This is a controlled direct-loss weighting — fundamentally different
+  from UWSO's softmax(1/L/T) collapse. Small κ (0.3) provides mild
+  hard-task preference while keeping weights balanced via softmax.
 
-  3. SMALL κ (0.1): At κ=0.1, the gradient distribution is nearly
-     balanced (like Kendall) but with a slight hard-task bias. This
-     prevents starvation while still prioritizing difficult tasks.
+  The softmax in network_loss is RETAINED — it provides essential
+  gradient magnitude control on real data. Removing it causes
+  regression (confirmed on NYUv2).
 
 Retained from v1:
   - bounded batch-adaptive log-variance chart
@@ -44,20 +44,19 @@ class BPGS(nn.Module):
       Z_i = tau_T * (2 * sigmoid(theta_i) - 1)
       s_i = mu(L) + sigma(L) * Z_i
       omega_i = exp(-s_i)                              [precision]
-      J_net = sum_i stopgrad(omega_i) * L_i             [unnormalized]
+      alpha_i = softmax(omega_i / temperature)          [precision-softmax]
+      J_net = sum_i stopgrad(alpha_i) * L_i
       J_unc = sum_i [0.5 * omega_i * detach(L_i)^(-kappa) + 0.5 * s_i]  [anti-Kendall]
 
     v1→v2 changes:
       - Uncertainty objective: m → m^(-κ)
         Shifts equilibrium from s*=log(L)=UWSO to s*=-κ·log(L).
-        At new equilibrium: omega_i* = L_i^κ.
-      - Network loss: softmax(exp(-s)/T) → unnormalized exp(-s)
-        Removes softmax competition that caused weight collapse.
-        At equilibrium: J_net = Σ L_i^κ * L_i = Σ L_i^(κ+1).
-        With κ=0.1, gradient distribution is nearly balanced (like Kendall)
-        but with mild hard-task focus.
+        At new equilibrium: omega_i* = L_i^κ, so alpha_i = softmax(L^κ/T),
+        a controlled direct-loss weighting — fundamentally different from
+        UWSO's softmax(1/L/T) collapse.
       - Auto-calibration: target s=log(L) → target s=-κ·log(L)
-      - temperature parameter: REMOVED from network_loss (no softmax)
+      - Network weight formula: UNCHANGED (softmax(exp(-s)/T))
+        The breakthrough comes from the equilibrium shift, not the formula.
     """
 
     def __init__(
@@ -65,7 +64,7 @@ class BPGS(nn.Module):
         num_tasks: int,
         eps_clip: float = 1e-8,
         temperature: float = 2.0,
-        kappa: float = 0.1,
+        kappa: float = 0.3,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -124,19 +123,18 @@ class BPGS(nn.Module):
         return mu + z * sigma
 
     def network_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
-        """Network objective using detached unnormalized precision weights.
+        """Network objective using detached precision-softmax weights.
 
-        v2: J_net = Σ stopgrad(exp(-s_i)) * L_i — NO softmax.
-        This restores Kendall's equal-gradient property while the bounded
-        chart prevents gradient explosion. With anti-Kendall equilibrium,
-        exp(-s*) = L^κ, so effective gradient per task = L^(κ+1).
+        softmax(exp(-s) / temperature) — same formula as v1, but the
+        anti-Kendall equilibrium shifts exp(-s*) from 1/L (UWSO) to L^κ
+        (controlled direct-loss), preventing weight collapse.
         """
         s = self.get_s(raw_losses)
-        precision = torch.exp(-s).detach()
+        equalized_weights = torch.softmax(torch.exp(-s) / self.temperature, dim=0).detach()
 
         total_loss = 0
         for i, loss in enumerate(raw_losses):
-            total_loss = total_loss + precision[i] * loss
+            total_loss = total_loss + equalized_weights[i] * loss
         return total_loss
 
     def uncertainty_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
@@ -151,11 +149,11 @@ class BPGS(nn.Module):
           → exp(-s_i*) * m_i^(-κ) = 1
           → s_i* = -κ * log(m_i)
 
-        At this equilibrium, network loss gradient per task becomes:
-          ∂J_net/∂w ∝ exp(-s_i*) * ∂L_i/∂w = L_i^κ * ∂L_i/∂w
-        With κ=0.1, this gives nearly balanced gradients (like Kendall's
-        weight*loss=0.5) but with mild hard-task focus. The bounded chart
-        prevents gradient explosion that Kendall's unbounded log_vars suffer.
+        At this equilibrium, network weights become:
+          α_i = softmax(exp(-s_i*) / T) = softmax(L_i^κ / T)
+        which is a controlled direct-loss weighting — fundamentally different
+        from UWSO's softmax(1/L/T) collapse. Small κ (0.3) provides mild
+        hard-task preference while keeping weights balanced.
         """
         if getattr(self, "_calibrated", False) is False:
             self.auto_calibrate(raw_losses)
@@ -175,9 +173,7 @@ class BPGS(nn.Module):
         """Compatibility interface for validation and logging."""
         with torch.no_grad():
             s = self.get_s(losses)
-            precision = torch.exp(-s)
-            # Normalize for logging (actual network_loss uses unnormalized)
-            equalized_weights = precision / precision.sum()
+            equalized_weights = torch.softmax(torch.exp(-s) / self.temperature, dim=0)
             total = (equalized_weights * losses).sum()
 
         metrics: Dict[str, torch.Tensor] = {
@@ -195,9 +191,7 @@ class BPGS(nn.Module):
         """Return current B-PGS telemetry for logging."""
         with torch.no_grad():
             s = self.get_s()
-            precision = torch.exp(-s)
-            # Normalize for logging
-            equalized_weights = precision / precision.sum()
+            equalized_weights = torch.softmax(torch.exp(-s) / self.temperature, dim=0)
 
         stats: Dict[str, float] = {}
         for i in range(self.num_tasks):

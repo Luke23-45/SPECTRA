@@ -162,8 +162,8 @@ outputs/
 logs
 docs/
 xdev
+tests
+logs.md
 scripts/benchmarks
 spectra/empirical
 configs/empirical
-scripts/run_empirical_experiment.py
-tests
