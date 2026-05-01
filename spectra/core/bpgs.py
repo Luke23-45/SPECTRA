@@ -42,6 +42,7 @@ class BPGS(nn.Module):
             raise ValueError(f"num_tasks must be positive; got {num_tasks}.")
         self.num_tasks = num_tasks
         self.temperature = temperature
+        self.eps_clip = float(eps_clip)
 
         # SVAM Topological Limit via Samuelson's Inequality: 
         # Mathematically guarantees non-saturation for any number of tasks.
@@ -61,12 +62,12 @@ class BPGS(nn.Module):
         """
         with torch.no_grad():
             detached_losses = torch.stack([l.detach() for l in raw_losses])
-            log_L = torch.log(detached_losses.clamp(min=1e-8))
+            log_L = torch.log(detached_losses.clamp(min=self.eps_clip))
             mu = log_L.mean()
             sigma = log_L.std(unbiased=False).clamp(min=1e-4)
 
             for i, l in enumerate(raw_losses):
-                opt_s = torch.log(l.clamp(min=1e-8))
+                opt_s = torch.log(l.clamp(min=self.eps_clip))
                 
                 # Project to Z-space
                 Z_target = (opt_s - mu) / sigma
@@ -86,7 +87,7 @@ class BPGS(nn.Module):
                 detached_losses = raw_losses.detach()
             else:
                 detached_losses = torch.stack([l.detach() for l in raw_losses])
-            log_L = torch.log(detached_losses.clamp(min=1e-8))
+            log_L = torch.log(detached_losses.clamp(min=self.eps_clip))
             mu = log_L.mean()
             sigma = log_L.std(unbiased=False).clamp(min=1e-4)
             self.last_mu[0] = mu
