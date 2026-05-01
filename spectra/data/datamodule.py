@@ -8,6 +8,7 @@ DataLoader instantiation for heterogeneous MTL benchmarks.
 """
 
 import logging
+import os
 import torch
 from typing import Optional, Dict, Any
 from torch.utils.data import DataLoader, DistributedSampler
@@ -49,6 +50,20 @@ def _loader_kwargs(dataset_name: str, num_workers: int, cfg: DictConfig) -> Dict
         kwargs["prefetch_factor"] = int(prefetch)
 
     return kwargs
+
+
+def _default_num_workers() -> int:
+    """Choose a conservative default that avoids worker oversubscription."""
+    cpu_count = os.cpu_count() or 1
+    # Keep one core for the trainer / main process and avoid the prior hard-coded 4.
+    return max(0, min(2, cpu_count - 1))
+
+
+def _resolve_num_workers(cfg: DictConfig) -> int:
+    configured = cfg.train.get("num_workers", None)
+    if configured is None:
+        return _default_num_workers()
+    return int(configured)
 
 
 def _use_nyuv2_batch_augmentation(cfg: DictConfig) -> bool:
@@ -178,17 +193,23 @@ class SPECTRADataModule(pl.LightningDataModule):
 
     def train_dataloader(self):
         batch_size = self.cfg.train.batch_size
-        num_workers = self.cfg.train.get("num_workers", 4)
+        num_workers = _resolve_num_workers(self.cfg)
         loader_kwargs = _loader_kwargs(self.dataset_name, num_workers, self.cfg)
         
         # Clinical requires specialized weighted sampler for sepsis oversampling
         if self.dataset_name == "clinical":
             sepsis_boost = self.cfg.get("sepsis_boost") or self.cfg.get("dataset", {}).get("sepsis_boost", 5.0)
             sampler_target = self.cfg.get("sampler_target") or self.cfg.get("dataset", {}).get("sampler_target", "outcome")
+            sampler_max_samples = (
+                self.cfg.train.get("sampler_max_samples", None)
+                or self.cfg.get("sampler_max_samples")
+                or self.cfg.get("dataset", {}).get("sampler_max_samples", None)
+            )
             
             sampler = create_sepsis_aware_sampler(
                 dataset=self.train_ds,
                 sepsis_boost_factor=sepsis_boost,
+                max_samples=sampler_max_samples if sampler_max_samples is not None else 100000,
                 seed=self.cfg.seed,
                 target=sampler_target,
             )
@@ -224,7 +245,7 @@ class SPECTRADataModule(pl.LightningDataModule):
         )
 
     def val_dataloader(self):
-        num_workers = self.cfg.train.get("num_workers", 4)
+        num_workers = _resolve_num_workers(self.cfg)
         loader_kwargs = _loader_kwargs(self.dataset_name, num_workers, self.cfg)
         collate_fn = None
         if self.dataset_name == "nyuv2":

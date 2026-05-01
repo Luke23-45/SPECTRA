@@ -1,14 +1,33 @@
 """
 spectra/core/bpgs.py
 --------------------
-Canonical B-PGS implementation for the active research path.
+Canonical B-PGS v2 implementation for the active research path.
 
-This is the single active B-PGS method in the repo:
-  - bounded log-variance chart
-  - detached precision in the network flow
-  - raw batch losses for the uncertainty flow
-  - no EMA, no R_eps, no auto-calibration, no prior term
+Three root-cause fixes over v1:
+  1. ANTI-KENDALL UNCERTAINTY: Replace m with m^(-κ) in the uncertainty
+     objective. This shifts the equilibrium from s*=log(L) (which converges
+     to UWSO) to s*=-κ·log(L) (which favors hard tasks). κ=0 recovers
+     the old Kendall equilibrium; κ>0 provides the anti-Kendall incentive.
+
+  2. UNNORMALIZED PRECISION WEIGHTING: Remove softmax from the network
+     loss. Use J_net = Σ stopgrad(exp(-s_i)) * L_i instead of softmax.
+     This restores Kendall's equal-gradient property (weight * loss = const)
+     while the bounded chart prevents gradient explosion. With anti-Kendall,
+     the effective gradient becomes L^(κ+1)/ΣL^κ — mild hard-task focus.
+
+  3. SMALL κ (0.1): At κ=0.1, the gradient distribution is nearly
+     balanced (like Kendall) but with a slight hard-task bias. This
+     prevents starvation while still prioritizing difficult tasks.
+
+Retained from v1:
+  - bounded batch-adaptive log-variance chart
+  - detached weights in the network flow
+  - raw batch losses for the uncertainty flow (detached)
+  - one-shot auto-calibration (updated for anti-Kendall target)
+  - no EMA, no extra architecture, no external training decoration
 """
+
+from __future__ import annotations
 
 import math
 from typing import Dict, List, Tuple
@@ -17,106 +36,127 @@ import torch
 import torch.nn as nn
 
 
-
-
 class BPGS(nn.Module):
     """
-    Canonical B-PGS weighting module.
+    Canonical B-PGS v2 weighting module.
 
     Active method definition:
-      s_i = a_i + (b_i - a_i) * sigmoid(theta_i)
-      omega_i = exp(-s_i)
-      J_net = sum_i 0.5 * stopgrad(omega_i) * L_i
-      J_unc = sum_i [0.5 * omega_i * detach(L_i) + 0.5 * s_i]
+      Z_i = tau_T * (2 * sigmoid(theta_i) - 1)
+      s_i = mu(L) + sigma(L) * Z_i
+      omega_i = exp(-s_i)                              [precision]
+      J_net = sum_i stopgrad(omega_i) * L_i             [unnormalized]
+      J_unc = sum_i [0.5 * omega_i * detach(L_i)^(-kappa) + 0.5 * s_i]  [anti-Kendall]
+
+    v1→v2 changes:
+      - Uncertainty objective: m → m^(-κ)
+        Shifts equilibrium from s*=log(L)=UWSO to s*=-κ·log(L).
+        At new equilibrium: omega_i* = L_i^κ.
+      - Network loss: softmax(exp(-s)/T) → unnormalized exp(-s)
+        Removes softmax competition that caused weight collapse.
+        At equilibrium: J_net = Σ L_i^κ * L_i = Σ L_i^(κ+1).
+        With κ=0.1, gradient distribution is nearly balanced (like Kendall)
+        but with mild hard-task focus.
+      - Auto-calibration: target s=log(L) → target s=-κ·log(L)
+      - temperature parameter: REMOVED from network_loss (no softmax)
     """
 
     def __init__(
         self,
         num_tasks: int,
         eps_clip: float = 1e-8,
-        temperature: float = 2.0,  # Matches the UWSO Gradient Currency Exchange scaler
+        temperature: float = 2.0,
+        kappa: float = 0.1,
         **kwargs,
     ) -> None:
         super().__init__()
         if num_tasks < 1:
             raise ValueError(f"num_tasks must be positive; got {num_tasks}.")
         self.num_tasks = num_tasks
-        self.temperature = temperature
+        self.eps_clip = float(eps_clip)
+        self.temperature = float(temperature)
+        self.kappa = float(kappa)
 
-        # SVAM Topological Limit via Samuelson's Inequality: 
-        # Mathematically guarantees non-saturation for any number of tasks.
-        # Max Z-score for T tasks is exactly sqrt(T-1).
-        self.topological_limit = math.sqrt(num_tasks - 1) + 0.1 
+        self.topological_limit = math.sqrt(num_tasks - 1) + 0.1
         self.register_buffer("last_mu", torch.zeros(1))
         self.register_buffer("last_sigma", torch.ones(1))
-        
+
         self.theta = nn.Parameter(torch.zeros(num_tasks))
         self._calibrated = False
 
     def auto_calibrate(self, raw_losses: List[torch.Tensor]) -> None:
-        """
-        NASA-Grade Initialization:
-        Analytically project the B-PGS manifold to the physical loss landscape on Step 0.
-        Eliminates 'Theta Inertia' without needing hyperparameter hacks.
+        """One-shot finite inverse-chart initialization from the current batch.
+
+        v2: Targets s = -κ·log(L) instead of s = log(L), matching the
+        anti-Kendall equilibrium instead of the Kendall equilibrium.
         """
         with torch.no_grad():
-            detached_losses = torch.stack([l.detach() for l in raw_losses])
-            log_L = torch.log(detached_losses.clamp(min=1e-8))
-            mu = log_L.mean()
-            sigma = log_L.std(unbiased=False).clamp(min=1e-4)
+            detached_losses = torch.stack([loss.detach() for loss in raw_losses])
+            log_l = torch.log(detached_losses.clamp(min=self.eps_clip))
+            mu = log_l.mean()
+            sigma = log_l.std(unbiased=False).clamp(min=1e-4)
 
-            for i, l in enumerate(raw_losses):
-                opt_s = torch.log(l.clamp(min=1e-8))
-                
-                # Project to Z-space
-                Z_target = (opt_s - mu) / sigma
-                Z_bounded = torch.clamp(Z_target, -self.topological_limit, self.topological_limit)
-                
-                # Inverse sigmoid to calculate the exact theta
-                sig_val = (Z_bounded + self.topological_limit) / (2 * self.topological_limit)
-                sig_val = torch.clamp(sig_val, 1e-4, 1.0 - 1e-4)
-                
-                self.theta.data[i] = -torch.log(1.0 / sig_val - 1.0)
-
+            for i, loss in enumerate(raw_losses):
+                # v2: anti-Kendall target s* = -κ * log(L)
+                optimal_s = -self.kappa * torch.log(loss.detach().clamp(min=self.eps_clip))
+                z_target = (optimal_s - mu) / sigma
+                z_bounded = torch.clamp(z_target, -self.topological_limit, self.topological_limit)
+                sigmoid_target = (z_bounded + self.topological_limit) / (2 * self.topological_limit)
+                sigmoid_target = torch.clamp(sigmoid_target, 1e-4, 1.0 - 1e-4)
+                self.theta.data[i] = torch.log(sigmoid_target / (1.0 - sigmoid_target))
 
     def get_s(self, raw_losses=None) -> torch.Tensor:
-        """Project theta to the bounded log-variance manifold using SVAM."""
+        """Project theta into the active bounded batch-adaptive log-variance chart."""
         if raw_losses is not None:
             if isinstance(raw_losses, torch.Tensor):
                 detached_losses = raw_losses.detach()
             else:
-                detached_losses = torch.stack([l.detach() for l in raw_losses])
-            log_L = torch.log(detached_losses.clamp(min=1e-8))
-            mu = log_L.mean()
-            sigma = log_L.std(unbiased=False).clamp(min=1e-4)
+                detached_losses = torch.stack([loss.detach() for loss in raw_losses])
+            log_l = torch.log(detached_losses.clamp(min=self.eps_clip))
+            mu = log_l.mean()
+            sigma = log_l.std(unbiased=False).clamp(min=1e-4)
             self.last_mu[0] = mu
             self.last_sigma[0] = sigma
         else:
             mu = self.last_mu[0]
             sigma = self.last_sigma[0]
 
-        Z = self.topological_limit * (2 * torch.sigmoid(self.theta) - 1.0)
-        return mu + Z * sigma
+        z = self.topological_limit * (2 * torch.sigmoid(self.theta) - 1.0)
+        return mu + z * sigma
 
     def network_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
-        """Base flow objective for network parameters with Stateless Temperature Equalization."""
+        """Network objective using detached unnormalized precision weights.
+
+        v2: J_net = Σ stopgrad(exp(-s_i)) * L_i — NO softmax.
+        This restores Kendall's equal-gradient property while the bounded
+        chart prevents gradient explosion. With anti-Kendall equilibrium,
+        exp(-s*) = L^κ, so effective gradient per task = L^(κ+1).
+        """
         s = self.get_s(raw_losses)
-        
-        # SOTA Empirical Scale-Equalization
-        # To perfectly align with UWSO (which uses Softmax((1/L) / T)),
-        # we map our Bayesian precision (exp(-s)) into the Softmax.
-        # We drop 'num_tasks' and '0.5' to match UWSO's sum=1.0 weighting scale.
-        equalized_weights = torch.softmax(torch.exp(-s) / self.temperature, dim=0).detach()
+        precision = torch.exp(-s).detach()
 
         total_loss = 0
         for i, loss in enumerate(raw_losses):
-            total_loss = total_loss + equalized_weights[i] * loss
+            total_loss = total_loss + precision[i] * loss
         return total_loss
 
-
-
     def uncertainty_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
-        """Fiber flow objective for strictly bounded Canonical uncertainty weighting."""
+        """Uncertainty objective using anti-Kendall incentive with detached raw batch losses.
+
+        v2: Replace m_i with m_i^(-κ). This shifts the equilibrium from
+        s*=log(m) (which converges to UWSO) to s*=-κ·log(m) (which favors
+        hard tasks). κ=0 recovers the old Kendall equilibrium.
+
+        Derivation of new equilibrium:
+          ∂J_unc/∂s_i = -0.5 * exp(-s_i) * m_i^(-κ) + 0.5 = 0
+          → exp(-s_i*) * m_i^(-κ) = 1
+          → s_i* = -κ * log(m_i)
+
+        At this equilibrium, network loss gradient per task becomes:
+          ∂J_net/∂w ∝ exp(-s_i*) * ∂L_i/∂w = L_i^κ * ∂L_i/∂w
+        With κ=0.1, this gives nearly balanced gradients (like Kendall's
+        weight*loss=0.5) but with mild hard-task focus. The bounded chart
+        prevents gradient explosion that Kendall's unbounded log_vars suffer.
+        """
         if getattr(self, "_calibrated", False) is False:
             self.auto_calibrate(raw_losses)
             self._calibrated = True
@@ -124,23 +164,20 @@ class BPGS(nn.Module):
         s = self.get_s(raw_losses)
         precision = torch.exp(-s)
 
-        # 1. Pure detachment respects the foundational split-optimization rules.
-        # No scalar normalizations are allowed. Let B-PGS natively fight the absolute scale imbalances!
         total_loss = 0
         for i, loss in enumerate(raw_losses):
-            total_loss = total_loss + 0.5 * precision[i] * loss.detach() + 0.5 * s[i]
-            
+            # v2: Anti-Kendall — m^(-κ) instead of m
+            effective_m = loss.detach().clamp(min=self.eps_clip).pow(-self.kappa)
+            total_loss = total_loss + 0.5 * precision[i] * effective_m + 0.5 * s[i]
         return total_loss
 
-
     def forward(self, losses: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """
-        Compatibility interface for validation/logging.
-        The active optimization path uses `network_loss` and `uncertainty_loss`.
-        """
+        """Compatibility interface for validation and logging."""
         with torch.no_grad():
             s = self.get_s(losses)
-            equalized_weights = torch.softmax(torch.exp(-s) / self.temperature, dim=0)
+            precision = torch.exp(-s)
+            # Normalize for logging (actual network_loss uses unnormalized)
+            equalized_weights = precision / precision.sum()
             total = (equalized_weights * losses).sum()
 
         metrics: Dict[str, torch.Tensor] = {
@@ -155,15 +192,17 @@ class BPGS(nn.Module):
         return total, metrics
 
     def get_task_stats(self) -> Dict[str, float]:
-        """Return current normalized statistics for proper monitoring telemetry."""
+        """Return current B-PGS telemetry for logging."""
         with torch.no_grad():
             s = self.get_s()
-            # Calculate what the network ACTUALLY receives, rather than raw exp(-s)
-            equalized_weights = torch.softmax(torch.exp(-s) / self.temperature, dim=0)
+            precision = torch.exp(-s)
+            # Normalize for logging
+            equalized_weights = precision / precision.sum()
 
         stats: Dict[str, float] = {}
         for i in range(self.num_tasks):
             stats[f"bpgs/log_var_{i}"] = s[i].item()
             stats[f"bpgs/weight_{i}"] = equalized_weights[i].item()
             stats[f"bpgs/theta_{i}"] = self.theta[i].item()
+        stats["bpgs/kappa"] = self.kappa
         return stats

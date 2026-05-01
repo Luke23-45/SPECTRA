@@ -580,7 +580,9 @@ class StatefulWeightedSampler(Sampler):
     epoch/consumed counters for exact DDP-safe resumption.
     """
     def __init__(self, weights, num_samples, replacement=True, seed=42):
-        super().__init__(None)
+        # torch.utils.data.Sampler does not accept a positional argument on
+        # newer PyTorch releases; use the version-safe no-arg constructor.
+        super().__init__()
         self.weights = torch.as_tensor(weights, dtype=torch.double)
         self.num_samples = num_samples
         self.replacement = replacement
@@ -684,6 +686,9 @@ def create_sepsis_aware_sampler(
         dataloader = DataLoader(dataset, batch_size=32, sampler=sampler)
     """
     n_samples = len(dataset)
+    epoch_samples = min(n_samples, int(max_samples)) if max_samples is not None else n_samples
+    if epoch_samples <= 0:
+        raise ValueError(f"max_samples must be positive, got {max_samples}")
     
     # Initialize weights (default = 1.0 for normal samples)
     weights = torch.ones(n_samples)
@@ -794,9 +799,13 @@ def create_sepsis_aware_sampler(
     # [v2.0 SOTA FIX]: Use StatefulWeightedSampler for gapless resumption
     sampler = StatefulWeightedSampler(
         weights=weights,
-        num_samples=n_samples,
+        num_samples=epoch_samples,
         replacement=True,
         seed=seed
+    )
+    logger.info(
+        f"[Sampler] Epoch sample cap: {epoch_samples:,}/{n_samples:,} windows "
+        f"({epoch_samples / n_samples:.2%} of dataset)"
     )
     
     return sampler
