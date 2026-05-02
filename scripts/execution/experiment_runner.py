@@ -28,6 +28,9 @@ HYDRA_TRAINING_MODULE = "scripts.run_training"
 METHODS_BY_DATASET: Dict[str, List[str]] = {
     "synthetic": ["static", "kendall", "uwso", "gradnorm_proxy", "pcgrad", "bpgs"],
     "nyuv2": ["static", "kendall", "uwso", "gradnorm_proxy", "pcgrad", "bpgs", "bpgs_alb"],
+    "rf1": ["static", "kendall", "uwso", "gradnorm_proxy", "pcgrad", "bpgs", "bpgs_alb"],
+    "yeast": ["static", "kendall", "uwso", "gradnorm_proxy", "pcgrad", "bpgs", "bpgs_alb"],
+    "qm9": ["static", "kendall", "uwso", "gradnorm_proxy", "pcgrad", "bpgs", "bpgs_alb"],
     "clinical": ["bpgs"],
 }
 
@@ -35,6 +38,18 @@ SCRIPT_EXPERIMENTS: Dict[str, Dict[str, object]] = {
     "nyuv2_generate": {
         "type": "script",
         "module": "scripts/data/nyuv2_generate.py",
+    },
+    "rf1_generate": {
+        "type": "script",
+        "module": "scripts/data/rf1_generate.py",
+    },
+    "yeast_generate": {
+        "type": "script",
+        "module": "scripts/data/yeast_generate.py",
+    },
+    "qm9_generate": {
+        "type": "script",
+        "module": "scripts/data/qm9_generate.py",
     }
 }
 
@@ -72,9 +87,12 @@ EXPERIMENTS = build_experiment_registry()
 
 def grouped_experiments() -> List[Tuple[str, List[str]]]:
     return [
-        ("Data Preparation", ["nyuv2_generate"]),
+        ("Data Preparation", ["nyuv2_generate", "rf1_generate", "yeast_generate", "qm9_generate"]),
         ("Training - Synthetic", [_hydra_alias("synthetic", m) for m in METHODS_BY_DATASET["synthetic"]]),
         ("Training - NYUv2", [_hydra_alias("nyuv2", m) for m in METHODS_BY_DATASET["nyuv2"]]),
+        ("Training - RF1", [_hydra_alias("rf1", m) for m in METHODS_BY_DATASET["rf1"]]),
+        ("Training - Yeast", [_hydra_alias("yeast", m) for m in METHODS_BY_DATASET["yeast"]]),
+        ("Training - QM9", [_hydra_alias("qm9", m) for m in METHODS_BY_DATASET["qm9"]]),
         ("Training - Clinical", [_hydra_alias("clinical", m) for m in METHODS_BY_DATASET["clinical"]]),
     ]
 
@@ -146,7 +164,13 @@ def print_usage() -> None:
     print("")
     print("Examples:")
     print("  python scripts/execution/experiment_runner.py nyuv2_generate --force")
+    print("  python scripts/execution/experiment_runner.py rf1_generate --force")
+    print("  python scripts/execution/experiment_runner.py yeast_generate --force")
+    print("  python scripts/execution/experiment_runner.py qm9_generate --force")
     print("  python scripts/execution/experiment_runner.py bpgs_nyuv2 train.epochs=200")
+    print("  python scripts/execution/experiment_runner.py bpgs_rf1 train.epochs=200")
+    print("  python scripts/execution/experiment_runner.py bpgs_yeast train.epochs=200")
+    print("  python scripts/execution/experiment_runner.py bpgs_qm9 train.epochs=200")
     print("  python scripts/execution/experiment_runner.py kendall_nyuv2 train.batch_size=4")
     print("  python scripts/execution/experiment_runner.py bpgs_clinical")
 

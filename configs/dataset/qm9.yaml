@@ -1,0 +1,75 @@
+# @package _global_
+# QM9 multi-target regression benchmark.
+
+dataset_name: qm9
+benchmark: qm9
+root: "datasets/qm9"
+subset_pct: 1.0
+subset_seed: 42
+normalize_inputs: true
+input_dim: 26
+num_targets: 12
+train_size: 120496
+val_size: 13389
+
+dataset:
+  name: qm9
+  benchmark: qm9
+  root: ${root}
+  subset_pct: ${subset_pct}
+  subset_seed: ${subset_seed}
+  normalize_inputs: ${normalize_inputs}
+  input_dim: ${input_dim}
+  num_targets: ${num_targets}
+  train_size: ${train_size}
+  val_size: ${val_size}
+
+module:
+  _target_: spectra.modules.synthetic.SyntheticSPECTRAModule
+  engine:
+    _target_: spectra.engine.optimizers.StandardEngine
+
+model:
+  backbone: shared_trunk
+  input_dim: 26
+  d_model: 256
+  hidden_layers: 4
+  n_heads: 8
+  dropout: 0.1
+
+tasks:
+  - { name: mu, type: regression, loss: mse, output_dim: 1, manifold: planner, weight: 1.0 }
+  - { name: alpha, type: regression, loss: mse, output_dim: 1, manifold: planner, weight: 1.0 }
+  - { name: homo, type: regression, loss: mse, output_dim: 1, manifold: planner, weight: 1.0 }
+  - { name: lumo, type: regression, loss: mse, output_dim: 1, manifold: planner, weight: 1.0 }
+  - { name: gap, type: regression, loss: mse, output_dim: 1, manifold: planner, weight: 1.0 }
+  - { name: r2, type: regression, loss: mse, output_dim: 1, manifold: planner, weight: 1.0 }
+  - { name: zpve, type: regression, loss: mse, output_dim: 1, manifold: planner, weight: 1.0 }
+  - { name: u0, type: regression, loss: mse, output_dim: 1, manifold: planner, weight: 1.0 }
+  - { name: u298, type: regression, loss: mse, output_dim: 1, manifold: planner, weight: 1.0 }
+  - { name: h298, type: regression, loss: mse, output_dim: 1, manifold: planner, weight: 1.0 }
+  - { name: g298, type: regression, loss: mse, output_dim: 1, manifold: planner, weight: 1.0 }
+  - { name: cv, type: regression, loss: mse, output_dim: 1, manifold: planner, weight: 1.0 }
+
+train:
+  save_ckpt: false
+  epochs: 120
+  batch_size: 256
+  lr: 0.0005
+  min_lr: 0.00001
+  warmup_steps: 200
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  precision: 32
+  num_workers: 2
+  prefetch_factor: 4
+  log_every_n_steps: 25
+  deterministic: false
+  early_stop: true
+  early_stop_patience: 20
+  early_stop_min_delta: 0.0001
+
+logging:
+  use_wandb: false
+  wandb_project: spectra-mtl
+  wandb_mode: offline

@@ -55,7 +55,7 @@ class ClinicalSPECTRAModule(OrthogonalSPECTRAModule):
             
             # Loss Functions
             self.task_weights[name] = nn.Parameter(torch.tensor(task.get("weight", 1.0)), requires_grad=False)
-            exclude = ["name", "loss", "weight", "metrics", "type", "manifold", "target"]
+            exclude = ["name", "loss", "weight", "metrics", "type", "manifold", "target", "output_dim"]
             loss_kwargs = {k: v for k, v in task.items() if k not in exclude}
             
             if 'pos_weight' in loss_kwargs and loss_kwargs['pos_weight'] is not None:

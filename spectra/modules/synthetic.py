@@ -18,6 +18,11 @@ from spectra.engine.losses import LOSS_REGISTRY
 from spectra.engine.weighters import build_weighter
 from spectra.utils.optimizer import build_optimizer_and_scheduler
 from spectra.engine.scalers import OnlineTargetScaler
+from spectra.evaluation.metrics import (
+    RegressionMetrics,
+    BinaryClassificationMetrics,
+    MultiLabelClassificationMetrics,
+)
 
 class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
     def __init__(self, cfg: DictConfig, engine: OptimizationEngine):
@@ -35,9 +40,14 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
         self.is_bpgs = (method_name in ("bpgs", "bpgs_alb"))
         
         self.task_names = [task.name for task in cfg.tasks]
+        self.task_types = {task.name: task.get("type", "regression") for task in cfg.tasks}
         self.task_weights = nn.ParameterDict()
         self.task_losses = nn.ModuleDict()
         self.target_scalers = nn.ModuleDict()
+        self._val_regression_metrics = {}
+        self._val_binary_metrics = {}
+        self._classification_task_names = []
+        self._val_multilabel_metrics = None
 
         for task in cfg.tasks:
             name = task.name
@@ -45,11 +55,21 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
             
             if task.get("type", "regression") == "regression":
                 self.target_scalers[name] = OnlineTargetScaler()
+                self._val_regression_metrics[name] = RegressionMetrics()
+            elif task.get("type") == "classification" and task.get("loss") in {"bce", "binary_cross_entropy"}:
+                self._val_binary_metrics[name] = BinaryClassificationMetrics()
+                self._classification_task_names.append(name)
             
             # Filter out non-loss arguments (Hydra/SPECTRA specific)
-            exclude = ["name", "loss", "weight", "metrics", "type", "manifold", "target"]
+            exclude = ["name", "loss", "weight", "metrics", "type", "manifold", "target", "output_dim"]
             loss_kwargs = {k: v for k, v in task.items() if k not in exclude}
             self.task_losses[name] = LOSS_REGISTRY[task.loss](**loss_kwargs)
+
+        dataset_name = cfg.get("dataset_name") or cfg.get("dataset", {}).get("name")
+        if dataset_name == "yeast" and self._classification_task_names:
+            self._val_multilabel_metrics = MultiLabelClassificationMetrics(
+                num_labels=len(self._classification_task_names)
+            )
 
     def forward(self, batch: Dict) -> Dict:
         return self.model(batch["input"])
@@ -87,10 +107,14 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
             raw_loss_dict[name] = raw_l
 
         losses_tensor = torch.stack(weighted_task_loss_list)
-        raw_losses_tensor = torch.stack([loss_dict[n] for n in self.task_names])
+        raw_losses_list = [loss_dict[n] for n in self.task_names]
+        raw_losses_tensor = torch.stack(raw_losses_list)
         
-        if self.is_pcgrad or self.is_bpgs:
+        if self.is_pcgrad:
             total_loss = losses_tensor.sum()
+        elif self.is_bpgs:
+            # BPGS: network_loss for base flow (gradients to model)
+            total_loss = self.weighter.network_loss(raw_losses_list)
         else:
             shared_params = list(self.backbone.parameters())
             if self.use_alb:
@@ -104,6 +128,13 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
             bsz = batch.get("input").shape[0] if isinstance(batch.get("input"), torch.Tensor) else 1
             for key, val in w_metrics.items():
                 self.log(f"train/{key}", val, on_step=False, on_epoch=True, sync_dist=True, batch_size=bsz)
+
+        # BPGS: also compute uncertainty_loss for fiber flow (gradients to theta)
+        if self.is_bpgs:
+            uncertainty = self.weighter.uncertainty_loss(raw_losses_list)
+            # Note: uncertainty_loss backward is handled by the optimizer on theta
+            # which is separate from the model parameter optimization
+            total_loss = total_loss + uncertainty
 
         final_loss = self.engine.backward_and_step(
             module=self,
@@ -131,6 +162,8 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
     def validation_step(self, batch: Dict, batch_idx: int) -> None:
         predictions = self(batch)
         weighted_task_loss_list = []
+        multilabel_logits = []
+        multilabel_targets = []
         
         for name in self.task_names:
             pred = predictions[name]
@@ -154,11 +187,25 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
             # Raw human-readable loss logging (Scale: ~80,000)
             raw_loss = self.task_losses[name](pred_unscaled, target)
             self.log(f"val/{name}_loss", raw_loss, sync_dist=True)
+
+            metric_obj = self._val_regression_metrics.get(name)
+            if metric_obj is not None:
+                metric_obj.update(pred_unscaled, target)
+            binary_metric_obj = self._val_binary_metrics.get(name)
+            if binary_metric_obj is not None:
+                binary_metric_obj.update(pred, target)
+                multilabel_logits.append(pred.reshape(-1, 1))
+                multilabel_targets.append(target.reshape(-1, 1))
             
             # Normalized loss for dynamic scaling (Scale: ~1.0)
             norm_loss = self.task_losses[name](pred, target_norm)
             self.log(f"val/{name}_loss_norm", norm_loss, sync_dist=True)
             weighted_task_loss_list.append(norm_loss * self.task_weights[name])
+
+        if self._val_multilabel_metrics is not None and multilabel_logits:
+            logits = torch.cat(multilabel_logits, dim=1)
+            targets = torch.cat(multilabel_targets, dim=1)
+            self._val_multilabel_metrics.update(logits, targets)
 
         losses_tensor = torch.stack(weighted_task_loss_list)
 
@@ -171,6 +218,51 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
         total_val_loss = losses_tensor.sum()
 
         self.log("val/total_loss", total_val_loss, sync_dist=True, prog_bar=True)
+
+    def on_validation_epoch_start(self) -> None:
+        for metric in self._val_regression_metrics.values():
+            metric.reset()
+        for metric in self._val_binary_metrics.values():
+            metric.reset()
+        if self._val_multilabel_metrics is not None:
+            self._val_multilabel_metrics.reset()
+
+    def on_validation_epoch_end(self) -> None:
+        if self._val_regression_metrics:
+            rmse_values = []
+            mae_values = []
+            r2_values = []
+
+            for name, metric_obj in self._val_regression_metrics.items():
+                result = metric_obj.compute()
+                self.log(f"val/{name}_rmse", result["rmse"], sync_dist=False)
+                self.log(f"val/{name}_mae", result["mae"], sync_dist=False)
+                self.log(f"val/{name}_r2", result["r2"], sync_dist=False)
+                rmse_values.append(result["rmse"])
+                mae_values.append(result["mae"])
+                r2_values.append(result["r2"])
+
+            mean_rmse = sum(rmse_values) / len(rmse_values)
+            mean_mae = sum(mae_values) / len(mae_values)
+            mean_r2 = sum(r2_values) / len(r2_values)
+
+            self.log("val/rmse", mean_rmse, prog_bar=True, sync_dist=False)
+            self.log("val/mae", mean_mae, prog_bar=False, sync_dist=False)
+            self.log("val/r2", mean_r2, prog_bar=True, sync_dist=False)
+
+        for name, metric_obj in self._val_binary_metrics.items():
+            result = metric_obj.compute()
+            self.log(f"val/{name}_f1", result["f1"], sync_dist=False)
+            self.log(f"val/{name}_accuracy", result["accuracy"], sync_dist=False)
+            self.log(f"val/{name}_precision", result["precision"], sync_dist=False)
+            self.log(f"val/{name}_recall", result["recall"], sync_dist=False)
+
+        if self._val_multilabel_metrics is not None:
+            result = self._val_multilabel_metrics.compute()
+            self.log("val/micro_f1", result["micro_f1"], prog_bar=True, sync_dist=False)
+            self.log("val/macro_f1", result["macro_f1"], sync_dist=False)
+            self.log("val/hamming_acc", result["hamming_acc"], prog_bar=False, sync_dist=False)
+            self.log("val/subset_acc", result["subset_acc"], prog_bar=True, sync_dist=False)
 
     def configure_optimizers(self):
         return build_optimizer_and_scheduler(self, self.cfg)

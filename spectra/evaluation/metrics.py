@@ -453,6 +453,205 @@ NYUv2_DELTA_M_METRICS = {
 
 
 # ===========================================================================
+# TABULAR REGRESSION METRICS
+# ===========================================================================
+
+class RegressionMetrics:
+    """
+    Exact global regression metrics accumulated over a full validation epoch.
+
+    Metrics:
+        - mae:  mean absolute error
+        - rmse: root mean squared error
+        - r2:   coefficient of determination
+
+    Accumulation is exact over the entire validation set rather than averaging
+    per-batch metrics, which would bias results when the last batch is smaller.
+    """
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self) -> None:
+        self._abs_error_sum = torch.tensor(0.0, dtype=torch.float64)
+        self._sq_error_sum = torch.tensor(0.0, dtype=torch.float64)
+        self._target_sum = torch.tensor(0.0, dtype=torch.float64)
+        self._target_sq_sum = torch.tensor(0.0, dtype=torch.float64)
+        self._count = torch.tensor(0.0, dtype=torch.float64)
+
+    @torch.no_grad()
+    def update(self, pred: torch.Tensor, target: torch.Tensor) -> None:
+        pred = pred.detach().double().reshape(-1).cpu()
+        target = target.detach().double().reshape(-1).cpu()
+        if pred.numel() == 0:
+            return
+
+        diff = pred - target
+        self._abs_error_sum += diff.abs().sum()
+        self._sq_error_sum += diff.square().sum()
+        self._target_sum += target.sum()
+        self._target_sq_sum += target.square().sum()
+        self._count += torch.tensor(float(target.numel()), dtype=torch.float64)
+
+    def compute(self) -> Dict[str, float]:
+        stats = torch.stack(
+            [
+                self._abs_error_sum,
+                self._sq_error_sum,
+                self._target_sum,
+                self._target_sq_sum,
+                self._count,
+            ]
+        ).float()
+        stats = sync_tensor_across_gpus(stats)
+
+        count = float(stats[4].item())
+        if count <= 0.0:
+            return {"mae": float("nan"), "rmse": float("nan"), "r2": float("nan"), "n": 0}
+
+        abs_error_sum = float(stats[0].item())
+        sq_error_sum = float(stats[1].item())
+        target_sum = float(stats[2].item())
+        target_sq_sum = float(stats[3].item())
+
+        mae = abs_error_sum / count
+        rmse = math.sqrt(sq_error_sum / count)
+
+        target_mean = target_sum / count
+        ss_tot = target_sq_sum - (count * target_mean * target_mean)
+        if ss_tot <= 1e-12:
+            r2 = 1.0 if sq_error_sum <= 1e-12 else 0.0
+        else:
+            r2 = 1.0 - (sq_error_sum / ss_tot)
+
+        return {"mae": mae, "rmse": rmse, "r2": r2, "n": int(count)}
+
+
+class BinaryClassificationMetrics:
+    """
+    Exact global binary classification metrics from logits.
+
+    Metrics:
+        - accuracy
+        - precision
+        - recall
+        - f1
+    """
+
+    def __init__(self, threshold: float = 0.5):
+        self.threshold = threshold
+        self.reset()
+
+    def reset(self) -> None:
+        self._tp = torch.tensor(0.0, dtype=torch.float64)
+        self._fp = torch.tensor(0.0, dtype=torch.float64)
+        self._fn = torch.tensor(0.0, dtype=torch.float64)
+        self._tn = torch.tensor(0.0, dtype=torch.float64)
+
+    @torch.no_grad()
+    def update(self, logits: torch.Tensor, target: torch.Tensor) -> None:
+        probs = torch.sigmoid(logits.detach()).reshape(-1).cpu()
+        pred = probs >= self.threshold
+        truth = target.detach().reshape(-1).cpu() >= 0.5
+
+        self._tp += (pred & truth).sum().double()
+        self._fp += (pred & ~truth).sum().double()
+        self._fn += (~pred & truth).sum().double()
+        self._tn += (~pred & ~truth).sum().double()
+
+    def compute(self) -> Dict[str, float]:
+        stats = torch.stack([self._tp, self._fp, self._fn, self._tn]).float()
+        stats = sync_tensor_across_gpus(stats)
+        tp, fp, fn, tn = [float(x.item()) for x in stats]
+
+        total = tp + fp + fn + tn
+        precision = tp / max(tp + fp, 1.0)
+        recall = tp / max(tp + fn, 1.0)
+        f1 = (2.0 * precision * recall) / max(precision + recall, 1e-12)
+        accuracy = (tp + tn) / max(total, 1.0)
+
+        return {
+            "accuracy": accuracy,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "n": int(total),
+        }
+
+
+class MultiLabelClassificationMetrics:
+    """
+    Exact global multilabel metrics from stacked logits and binary targets.
+
+    Metrics:
+        - micro_f1
+        - macro_f1
+        - hamming_acc
+        - subset_acc
+    """
+
+    def __init__(self, num_labels: int, threshold: float = 0.5):
+        self.num_labels = num_labels
+        self.threshold = threshold
+        self.reset()
+
+    def reset(self) -> None:
+        self._tp = torch.zeros(self.num_labels, dtype=torch.float64)
+        self._fp = torch.zeros(self.num_labels, dtype=torch.float64)
+        self._fn = torch.zeros(self.num_labels, dtype=torch.float64)
+        self._tn = torch.zeros(self.num_labels, dtype=torch.float64)
+        self._subset_correct = torch.tensor(0.0, dtype=torch.float64)
+        self._sample_count = torch.tensor(0.0, dtype=torch.float64)
+
+    @torch.no_grad()
+    def update(self, logits: torch.Tensor, target: torch.Tensor) -> None:
+        probs = torch.sigmoid(logits.detach()).cpu()
+        pred = probs >= self.threshold
+        truth = target.detach().cpu() >= 0.5
+
+        self._tp += (pred & truth).sum(dim=0).double()
+        self._fp += (pred & ~truth).sum(dim=0).double()
+        self._fn += (~pred & truth).sum(dim=0).double()
+        self._tn += (~pred & ~truth).sum(dim=0).double()
+        self._subset_correct += (pred == truth).all(dim=1).sum().double()
+        self._sample_count += torch.tensor(float(truth.shape[0]), dtype=torch.float64)
+
+    def compute(self) -> Dict[str, float]:
+        tp = sync_tensor_across_gpus(self._tp.float()).double()
+        fp = sync_tensor_across_gpus(self._fp.float()).double()
+        fn = sync_tensor_across_gpus(self._fn.float()).double()
+        tn = sync_tensor_across_gpus(self._tn.float()).double()
+        subset_correct = float(sync_tensor_across_gpus(self._subset_correct.float()).item())
+        sample_count = float(sync_tensor_across_gpus(self._sample_count.float()).item())
+
+        per_label_precision = tp / torch.clamp(tp + fp, min=1.0)
+        per_label_recall = tp / torch.clamp(tp + fn, min=1.0)
+        per_label_f1 = (2.0 * per_label_precision * per_label_recall) / torch.clamp(
+            per_label_precision + per_label_recall,
+            min=1e-12,
+        )
+
+        tp_sum = float(tp.sum().item())
+        fp_sum = float(fp.sum().item())
+        fn_sum = float(fn.sum().item())
+        total_labels = float((tp + fp + fn + tn).sum().item())
+
+        micro_precision = tp_sum / max(tp_sum + fp_sum, 1.0)
+        micro_recall = tp_sum / max(tp_sum + fn_sum, 1.0)
+        micro_f1 = (2.0 * micro_precision * micro_recall) / max(micro_precision + micro_recall, 1e-12)
+        hamming_acc = float((tp + tn).sum().item()) / max(total_labels, 1.0)
+        subset_acc = subset_correct / max(sample_count, 1.0)
+
+        return {
+            "micro_f1": micro_f1,
+            "macro_f1": float(per_label_f1.mean().item()),
+            "hamming_acc": hamming_acc,
+            "subset_acc": subset_acc,
+            "n_samples": int(sample_count),
+        }
+
+
+# ===========================================================================
 # STANDALONE VERIFICATION
 # ===========================================================================
 

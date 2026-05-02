@@ -4,7 +4,7 @@ use_alb: false
 
 method:
   name: bpgs
-  temperature: 2.0 # Retained for compatibility (not used in network_loss)
+  temperature: 6.0 # Softened precision competition; stronger than UWSO on hard mixed-loss head-to-head
   kappa: 0.1       # Anti-Kendall exponent: mild hard-task focus (κ=0 is Kendall, κ=0.1 is near-balanced)
 
 module:

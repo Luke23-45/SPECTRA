@@ -7,7 +7,17 @@ This is the single active B-PGS method in the repo:
   - bounded log-variance chart
   - detached precision in the network flow
   - raw batch losses for the uncertainty flow
+  - adaptive CV-based temperature (default) or fixed temperature
   - no EMA, no R_eps, no auto-calibration, no prior term
+
+Adaptive Temperature:
+  Default behavior uses adaptive temperature based on batch statistics:
+    T = σ(log_L) / |μ(log_L)| × 2.0
+  
+  High loss dispersion (CV) → higher temperature (more smoothing)
+  Low loss dispersion (CV) → lower temperature (sharper competition)
+  
+  For fixed temperature, pass temperature=<value> to __init__.
 """
 
 import math
@@ -17,6 +27,15 @@ import torch
 import torch.nn as nn
 
 
+class GradScale(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, scale):
+        ctx.scale = scale
+        return x
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output * ctx.scale, None
 
 
 class BPGS(nn.Module):
@@ -34,14 +53,14 @@ class BPGS(nn.Module):
         self,
         num_tasks: int,
         eps_clip: float = 1e-8,
-        temperature: float = 2.0,  # Matches the UWSO Gradient Currency Exchange scaler
+        temperature: float | None = None,  # None = use adaptive CV-based
         **kwargs,
     ) -> None:
         super().__init__()
         if num_tasks < 1:
             raise ValueError(f"num_tasks must be positive; got {num_tasks}.")
         self.num_tasks = num_tasks
-        self.temperature = temperature
+        self.temperature = temperature  # None = use adaptive CV-based
         self.eps_clip = float(eps_clip)
 
         # SVAM Topological Limit via Samuelson's Inequality: 
@@ -96,8 +115,32 @@ class BPGS(nn.Module):
             mu = self.last_mu[0]
             sigma = self.last_sigma[0]
 
-        Z = self.topological_limit * (2 * torch.sigmoid(self.theta) - 1.0)
+        theta_scaled = GradScale.apply(self.theta, 100.0)
+        Z = self.topological_limit * (2 * torch.sigmoid(theta_scaled) - 1.0)
         return mu + Z * sigma
+
+    def _compute_temperature(self, raw_losses: List[torch.Tensor] | torch.Tensor) -> torch.Tensor:
+        """
+        Adaptive temperature based on coefficient of variation of log-losses.
+        
+        T = σ(log_L) / |μ(log_L)| × 2.0
+        
+        High CV (dispersed losses) → higher temperature (more smoothing)
+        Low CV (similar losses) → lower temperature (sharper competition)
+        """
+        if isinstance(raw_losses, list):
+            losses = torch.stack([l.detach() for l in raw_losses])
+        else:
+            losses = raw_losses.detach()
+        
+        log_L = torch.log(losses.clamp(min=self.eps_clip))
+        mu = log_L.mean()
+        sigma = log_L.std(unbiased=False)
+        cv = sigma / mu.abs().clamp(min=self.eps_clip)
+        
+        # Scale to reasonable range [0.5, 5.0]
+        T = torch.clamp(cv * 2.0, min=0.1, max=5.0)
+        return T
 
     def network_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
         """Base flow objective for network parameters with Stateless Temperature Equalization."""
@@ -107,7 +150,11 @@ class BPGS(nn.Module):
         # To perfectly align with UWSO (which uses Softmax((1/L) / T)),
         # we map our Bayesian precision (exp(-s)) into the Softmax.
         # We drop 'num_tasks' and '0.5' to match UWSO's sum=1.0 weighting scale.
-        equalized_weights = torch.softmax(torch.exp(-s) / self.temperature, dim=0).detach()
+        if self.temperature is None:
+            T = self._compute_temperature(raw_losses)
+        else:
+            T = self.temperature
+        equalized_weights = torch.softmax(torch.exp(-s) / T, dim=0).detach()
 
         total_loss = 0
         for i, loss in enumerate(raw_losses):
@@ -141,7 +188,11 @@ class BPGS(nn.Module):
         """
         with torch.no_grad():
             s = self.get_s(losses)
-            equalized_weights = torch.softmax(torch.exp(-s) / self.temperature, dim=0)
+            if self.temperature is None:
+                T = self._compute_temperature(losses)
+            else:
+                T = self.temperature
+            equalized_weights = torch.softmax(torch.exp(-s) / T, dim=0)
             total = (equalized_weights * losses).sum()
 
         metrics: Dict[str, torch.Tensor] = {
@@ -160,7 +211,11 @@ class BPGS(nn.Module):
         with torch.no_grad():
             s = self.get_s()
             # Calculate what the network ACTUALLY receives, rather than raw exp(-s)
-            equalized_weights = torch.softmax(torch.exp(-s) / self.temperature, dim=0)
+            if self.temperature is None:
+                T = self._compute_temperature(None)
+            else:
+                T = self.temperature
+            equalized_weights = torch.softmax(torch.exp(-s) / T, dim=0)
 
         stats: Dict[str, float] = {}
         for i in range(self.num_tasks):

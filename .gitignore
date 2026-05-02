@@ -148,7 +148,7 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
-logs/
+
 # PyCharm
 #  JetBrains IDEs: .idea/ (whole folder)
 .idea/
