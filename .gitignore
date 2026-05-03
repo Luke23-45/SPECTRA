@@ -164,6 +164,7 @@ docs/
 xdev
 tests
 logs.md
+aaa.md
 scripts/benchmarks
 spectra/empirical
 configs/empirical
