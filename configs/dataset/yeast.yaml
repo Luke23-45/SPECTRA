@@ -1,0 +1,77 @@
+# @package _global_
+# Yeast Protein Localization multi-label benchmark.
+
+dataset_name: yeast
+benchmark: yeast
+root: "datasets/yeast"
+subset_pct: 1.0
+subset_seed: 42
+normalize_inputs: true
+input_dim: 103
+num_labels: 14
+train_size: 1500
+val_size: 917
+
+dataset:
+  name: yeast
+  benchmark: yeast
+  root: ${root}
+  subset_pct: ${subset_pct}
+  subset_seed: ${subset_seed}
+  normalize_inputs: ${normalize_inputs}
+  input_dim: ${input_dim}
+  num_labels: ${num_labels}
+  train_size: ${train_size}
+  val_size: ${val_size}
+
+module:
+  _target_: spectra.modules.synthetic.SyntheticSPECTRAModule
+  engine:
+    _target_: spectra.engine.optimizers.StandardEngine
+
+model:
+  backbone: shared_trunk
+  input_dim: 103
+  d_model: 256
+  hidden_layers: 4
+  n_heads: 8
+  dropout: 0.1
+
+tasks:
+  - { name: label_01, type: classification, loss: bce, num_classes: 1, manifold: expert, weight: 1.0 }
+  - { name: label_02, type: classification, loss: bce, num_classes: 1, manifold: expert, weight: 1.0 }
+  - { name: label_03, type: classification, loss: bce, num_classes: 1, manifold: expert, weight: 1.0 }
+  - { name: label_04, type: classification, loss: bce, num_classes: 1, manifold: expert, weight: 1.0 }
+  - { name: label_05, type: classification, loss: bce, num_classes: 1, manifold: expert, weight: 1.0 }
+  - { name: label_06, type: classification, loss: bce, num_classes: 1, manifold: expert, weight: 1.0 }
+  - { name: label_07, type: classification, loss: bce, num_classes: 1, manifold: expert, weight: 1.0 }
+  - { name: label_08, type: classification, loss: bce, num_classes: 1, manifold: expert, weight: 1.0 }
+  - { name: label_09, type: classification, loss: bce, num_classes: 1, manifold: expert, weight: 1.0 }
+  - { name: label_10, type: classification, loss: bce, num_classes: 1, manifold: expert, weight: 1.0 }
+  - { name: label_11, type: classification, loss: bce, num_classes: 1, manifold: expert, weight: 1.0 }
+  - { name: label_12, type: classification, loss: bce, num_classes: 1, manifold: expert, weight: 1.0 }
+  - { name: label_13, type: classification, loss: bce, num_classes: 1, manifold: expert, weight: 1.0 }
+  - { name: label_14, type: classification, loss: bce, num_classes: 1, manifold: expert, weight: 1.0 }
+
+train:
+  save_ckpt: false
+  epochs: 120
+  batch_size: 128
+  lr: 0.0005
+  min_lr: 0.00001
+  warmup_steps: 200
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  precision: 32
+  num_workers: 2
+  prefetch_factor: 4
+  log_every_n_steps: 25
+  deterministic: false
+  early_stop: true
+  early_stop_patience: 20
+  early_stop_min_delta: 0.0001
+
+logging:
+  use_wandb: false
+  wandb_project: spectra-mtl
+  wandb_mode: offline

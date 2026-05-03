@@ -29,8 +29,7 @@ def build_weighter(cfg):
         m_cfg = cfg.get("method", {})
         return BPGS(
             num_tasks=len(cfg.tasks),
-            temperature=m_cfg.get("temperature", 2.0),
-            kappa=m_cfg.get("kappa", 0.3),
+            temperature=m_cfg.get("temperature", None),  # None = adaptive CV-based
         )
 
     cls = WEIGHTER_REGISTRY.get(name)

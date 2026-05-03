@@ -34,6 +34,53 @@ def test_experiment_runner_registers_full_nyuv2_matrix():
 
     assert "nyuv2_generate" in EXPERIMENTS
     assert EXPERIMENTS["nyuv2_generate"]["type"] == "script"
+    assert "rf1_generate" in EXPERIMENTS
+    assert EXPERIMENTS["rf1_generate"]["type"] == "script"
+
+
+def test_experiment_runner_registers_full_rf1_matrix():
+    assert METHODS_BY_DATASET["rf1"] == [
+        "static",
+        "kendall",
+        "uwso",
+        "gradnorm_proxy",
+        "pcgrad",
+        "bpgs",
+        "bpgs_alb",
+    ]
+
+    for method in METHODS_BY_DATASET["rf1"]:
+        alias = f"{method}_rf1"
+        assert alias in EXPERIMENTS
+        assert default_overrides_for_experiment(alias) == [
+            "dataset=rf1",
+            f"method={method}",
+        ]
+
+
+def test_experiment_runner_registers_full_yeast_and_qm9_matrices():
+    for dataset_name in ["yeast", "qm9"]:
+        assert METHODS_BY_DATASET[dataset_name] == [
+            "static",
+            "kendall",
+            "uwso",
+            "gradnorm_proxy",
+            "pcgrad",
+            "bpgs",
+            "bpgs_alb",
+        ]
+        for method in METHODS_BY_DATASET[dataset_name]:
+            alias = f"{method}_{dataset_name}"
+            assert alias in EXPERIMENTS
+            assert default_overrides_for_experiment(alias) == [
+                f"dataset={dataset_name}",
+                f"method={method}",
+            ]
+
+    assert "yeast_generate" in EXPERIMENTS
+    assert EXPERIMENTS["yeast_generate"]["type"] == "script"
+    assert "qm9_generate" in EXPERIMENTS
+    assert EXPERIMENTS["qm9_generate"]["type"] == "script"
 
 
 def test_experiment_runner_builds_hydra_and_script_commands():
@@ -47,6 +94,28 @@ def test_experiment_runner_builds_hydra_and_script_commands():
     script_cmd = build_command("nyuv2_generate", extra_args=["--force"])
     assert script_cmd[1].endswith("scripts\\data\\nyuv2_generate.py") or script_cmd[1].endswith("scripts/data/nyuv2_generate.py")
     assert "--force" in script_cmd
+
+    hydra_rf1_cmd = build_command("bpgs_rf1", extra_args=["seed=43"], epochs=200)
+    assert "dataset=rf1" in hydra_rf1_cmd
+    assert "method=bpgs" in hydra_rf1_cmd
+    assert "train.epochs=200" in hydra_rf1_cmd
+
+    rf1_script_cmd = build_command("rf1_generate", extra_args=["--force"])
+    assert rf1_script_cmd[1].endswith("scripts\\data\\rf1_generate.py") or rf1_script_cmd[1].endswith("scripts/data/rf1_generate.py")
+    assert "--force" in rf1_script_cmd
+
+    qm9_cmd = build_command("bpgs_qm9", extra_args=["seed=43"], epochs=200)
+    assert "dataset=qm9" in qm9_cmd
+    assert "method=bpgs" in qm9_cmd
+
+    yeast_cmd = build_command("uwso_yeast", extra_args=["seed=43"], epochs=20)
+    assert "dataset=yeast" in yeast_cmd
+    assert "method=uwso" in yeast_cmd
+
+    yeast_script_cmd = build_command("yeast_generate", extra_args=["--force"])
+    assert yeast_script_cmd[1].endswith("scripts\\data\\yeast_generate.py") or yeast_script_cmd[1].endswith("scripts/data/yeast_generate.py")
+    qm9_script_cmd = build_command("qm9_generate", extra_args=["--force"])
+    assert qm9_script_cmd[1].endswith("scripts\\data\\qm9_generate.py") or qm9_script_cmd[1].endswith("scripts/data/qm9_generate.py")
 
 
 def test_resolve_nyuv2_methods_and_seeds_defaults():

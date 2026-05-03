@@ -1,0 +1,119 @@
+# @package _global_
+# configs/dataset/rf1.yaml
+# River Flow RF1 multi-target regression benchmark.
+
+dataset_name: rf1
+benchmark: rf1
+root: "datasets/rf1"
+subset_pct: 1.0
+subset_seed: 42
+normalize_inputs: true
+input_dim: 64
+num_targets: 8
+train_size: 0
+val_size: 0
+
+dataset:
+  name: rf1
+  benchmark: rf1
+  root: ${root}
+  subset_pct: ${subset_pct}
+  subset_seed: ${subset_seed}
+  normalize_inputs: ${normalize_inputs}
+  input_dim: ${input_dim}
+  num_targets: ${num_targets}
+  train_size: ${train_size}
+  val_size: ${val_size}
+
+module:
+  _target_: spectra.modules.synthetic.SyntheticSPECTRAModule
+  engine:
+    _target_: spectra.engine.optimizers.StandardEngine
+
+model:
+  backbone: shared_trunk
+  input_dim: 64
+  d_model: 256
+  hidden_layers: 4
+  n_heads: 8
+  dropout: 0.1
+
+tasks:
+  - name: flow_site_1_plus_48h
+    type: regression
+    loss: mse
+    output_dim: 1
+    manifold: planner
+    weight: 1.0
+
+  - name: flow_site_2_plus_48h
+    type: regression
+    loss: mse
+    output_dim: 1
+    manifold: planner
+    weight: 1.0
+
+  - name: flow_site_3_plus_48h
+    type: regression
+    loss: mse
+    output_dim: 1
+    manifold: planner
+    weight: 1.0
+
+  - name: flow_site_4_plus_48h
+    type: regression
+    loss: mse
+    output_dim: 1
+    manifold: planner
+    weight: 1.0
+
+  - name: flow_site_5_plus_48h
+    type: regression
+    loss: mse
+    output_dim: 1
+    manifold: planner
+    weight: 1.0
+
+  - name: flow_site_6_plus_48h
+    type: regression
+    loss: mse
+    output_dim: 1
+    manifold: planner
+    weight: 1.0
+
+  - name: flow_site_7_plus_48h
+    type: regression
+    loss: mse
+    output_dim: 1
+    manifold: planner
+    weight: 1.0
+
+  - name: flow_site_8_plus_48h
+    type: regression
+    loss: mse
+    output_dim: 1
+    manifold: planner
+    weight: 1.0
+
+train:
+  save_ckpt: false
+  epochs: 120
+  batch_size: 256
+  lr: 0.0005
+  min_lr: 0.00001
+  warmup_steps: 200
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  precision: 32
+  num_workers: 2
+  prefetch_factor: 4
+  log_every_n_steps: 25
+  deterministic: false
+  early_stop: true
+  early_stop_patience: 20
+  early_stop_min_delta: 0.0001
+
+logging:
+  use_wandb: false
+  wandb_project: spectra-mtl
+  wandb_mode: offline

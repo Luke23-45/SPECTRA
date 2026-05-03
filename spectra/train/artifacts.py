@@ -190,6 +190,30 @@ def generate_experiment_metadata(cfg: DictConfig, artifact_dir: Path) -> Dict[st
             "train_size": cfg.get("train_size", 0),
             "val_size": cfg.get("val_size", 0)
         })
+    elif dataset_name == "rf1":
+        dataset_info.update({
+            "input_dim": cfg.get("input_dim", cfg.get("model", {}).get("input_dim", 0)),
+            "num_targets": cfg.get("num_targets", 0),
+            "normalize_inputs": cfg.get("normalize_inputs", True),
+            "train_size": cfg.get("train_size", 0),
+            "val_size": cfg.get("val_size", 0),
+        })
+    elif dataset_name == "yeast":
+        dataset_info.update({
+            "input_dim": cfg.get("input_dim", cfg.get("model", {}).get("input_dim", 0)),
+            "num_labels": cfg.get("num_labels", 0),
+            "normalize_inputs": cfg.get("normalize_inputs", True),
+            "train_size": cfg.get("train_size", 0),
+            "val_size": cfg.get("val_size", 0),
+        })
+    elif dataset_name == "qm9":
+        dataset_info.update({
+            "input_dim": cfg.get("input_dim", cfg.get("model", {}).get("input_dim", 0)),
+            "num_targets": cfg.get("num_targets", 0),
+            "normalize_inputs": cfg.get("normalize_inputs", True),
+            "train_size": cfg.get("train_size", 0),
+            "val_size": cfg.get("val_size", 0),
+        })
     
     metadata = {
         "experiment": {

@@ -17,6 +17,9 @@ from omegaconf import DictConfig
 
 from spectra.data.synthetic import SyntheticMTLDataset
 from spectra.data.nyuv2.dataset import NYUv2Dataset, resolve_nyuv2_root
+from spectra.data.rf1.dataset import RF1Dataset, resolve_rf1_root
+from spectra.data.yeast.dataset import YeastDataset, resolve_yeast_root
+from spectra.data.qm9.dataset import QM9Dataset, resolve_qm9_root
 from spectra.data.clinical.dataset import ICUTrajectoryDataset, ICUSotaDataset, create_sepsis_aware_sampler, robust_collate_fn
 
 logger = logging.getLogger("spectra.datamodule")
@@ -45,6 +48,12 @@ def _loader_kwargs(dataset_name: str, num_workers: int, cfg: DictConfig) -> Dict
 
     prefetch = cfg.train.get("prefetch_factor", None)
     if prefetch is None and dataset_name == "nyuv2":
+        prefetch = 4
+    if prefetch is None and dataset_name == "rf1":
+        prefetch = 4
+    if prefetch is None and dataset_name == "yeast":
+        prefetch = 4
+    if prefetch is None and dataset_name == "qm9":
         prefetch = 4
     if prefetch is not None:
         kwargs["prefetch_factor"] = int(prefetch)
@@ -125,6 +134,48 @@ class SPECTRADataModule(pl.LightningDataModule):
                         f"[NYUv2] Missing data for split '{split}'. "
                         f"Run: python -m spectra.data.nyuv2.nyuv2_lmdb_sota"
                     )
+        elif self.dataset_name == "rf1":
+            root = _cfg_lookup(self.cfg, "root", "datasets/rf1")
+            root_path = resolve_rf1_root(root)
+            for required_path in [
+                root_path / "metadata.json",
+                root_path / "train" / "data.npz",
+                root_path / "val" / "data.npz",
+            ]:
+                if not required_path.exists():
+                    logger.warning(
+                        "[RF1] Missing prepared data at '%s'. "
+                        "Run: python -m spectra.data.rf1.ingest or python scripts/data/rf1_generate.py",
+                        required_path,
+                    )
+        elif self.dataset_name == "yeast":
+            root = _cfg_lookup(self.cfg, "root", "datasets/yeast")
+            root_path = resolve_yeast_root(root)
+            for required_path in [
+                root_path / "metadata.json",
+                root_path / "train" / "data.npz",
+                root_path / "val" / "data.npz",
+            ]:
+                if not required_path.exists():
+                    logger.warning(
+                        "[YEAST] Missing prepared data at '%s'. "
+                        "Run: python -m spectra.data.yeast.ingest or python scripts/data/yeast_generate.py",
+                        required_path,
+                    )
+        elif self.dataset_name == "qm9":
+            root = _cfg_lookup(self.cfg, "root", "datasets/qm9")
+            root_path = resolve_qm9_root(root)
+            for required_path in [
+                root_path / "metadata.json",
+                root_path / "train" / "data.npz",
+                root_path / "val" / "data.npz",
+            ]:
+                if not required_path.exists():
+                    logger.warning(
+                        "[QM9] Missing prepared data at '%s'. "
+                        "Run: python -m spectra.data.qm9.ingest or python scripts/data/qm9_generate.py",
+                        required_path,
+                    )
 
     def setup(self, stage: Optional[str] = None):
         """Instantiate datasets across all DDP ranks."""
@@ -167,6 +218,69 @@ class SPECTRADataModule(pl.LightningDataModule):
                 subset_pct=subset_pct,
                 subset_seed=subset_seed,
                 normalize_rgb=normalize_rgb,
+            )
+
+        elif self.dataset_name == "rf1":
+            root = _cfg_lookup(self.cfg, "root")
+            subset_pct = _cfg_lookup(self.cfg, "subset_pct", 1.0)
+            subset_seed = _cfg_lookup(self.cfg, "subset_seed", 42)
+            normalize_inputs = _cfg_lookup(self.cfg, "normalize_inputs", True)
+
+            self.train_ds = RF1Dataset(
+                root=root,
+                split="train",
+                normalize_inputs=normalize_inputs,
+                subset_pct=subset_pct,
+                subset_seed=subset_seed,
+            )
+            self.val_ds = RF1Dataset(
+                root=root,
+                split="val",
+                normalize_inputs=normalize_inputs,
+                subset_pct=subset_pct,
+                subset_seed=subset_seed,
+            )
+
+        elif self.dataset_name == "yeast":
+            root = _cfg_lookup(self.cfg, "root")
+            subset_pct = _cfg_lookup(self.cfg, "subset_pct", 1.0)
+            subset_seed = _cfg_lookup(self.cfg, "subset_seed", 42)
+            normalize_inputs = _cfg_lookup(self.cfg, "normalize_inputs", True)
+
+            self.train_ds = YeastDataset(
+                root=root,
+                split="train",
+                normalize_inputs=normalize_inputs,
+                subset_pct=subset_pct,
+                subset_seed=subset_seed,
+            )
+            self.val_ds = YeastDataset(
+                root=root,
+                split="val",
+                normalize_inputs=normalize_inputs,
+                subset_pct=subset_pct,
+                subset_seed=subset_seed,
+            )
+
+        elif self.dataset_name == "qm9":
+            root = _cfg_lookup(self.cfg, "root")
+            subset_pct = _cfg_lookup(self.cfg, "subset_pct", 1.0)
+            subset_seed = _cfg_lookup(self.cfg, "subset_seed", 42)
+            normalize_inputs = _cfg_lookup(self.cfg, "normalize_inputs", True)
+
+            self.train_ds = QM9Dataset(
+                root=root,
+                split="train",
+                normalize_inputs=normalize_inputs,
+                subset_pct=subset_pct,
+                subset_seed=subset_seed,
+            )
+            self.val_ds = QM9Dataset(
+                root=root,
+                split="val",
+                normalize_inputs=normalize_inputs,
+                subset_pct=subset_pct,
+                subset_seed=subset_seed,
             )
 
         elif self.dataset_name == "clinical":
@@ -230,6 +344,12 @@ class SPECTRADataModule(pl.LightningDataModule):
         collate_fn = None
         if self.dataset_name == "nyuv2":
             collate_fn = NYUv2Dataset.collate_fn
+        elif self.dataset_name == "rf1":
+            collate_fn = RF1Dataset.collate_fn
+        elif self.dataset_name == "yeast":
+            collate_fn = YeastDataset.collate_fn
+        elif self.dataset_name == "qm9":
+            collate_fn = QM9Dataset.collate_fn
         elif self.dataset_name == "synthetic":
             collate_fn = SyntheticMTLDataset.collate_fn
 
@@ -250,6 +370,12 @@ class SPECTRADataModule(pl.LightningDataModule):
         collate_fn = None
         if self.dataset_name == "nyuv2":
             collate_fn = NYUv2Dataset.collate_fn
+        elif self.dataset_name == "rf1":
+            collate_fn = RF1Dataset.collate_fn
+        elif self.dataset_name == "yeast":
+            collate_fn = YeastDataset.collate_fn
+        elif self.dataset_name == "qm9":
+            collate_fn = QM9Dataset.collate_fn
         elif self.dataset_name == "clinical":
             collate_fn = robust_collate_fn
         elif self.dataset_name == "synthetic":
