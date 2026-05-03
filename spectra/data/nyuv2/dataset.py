@@ -137,6 +137,8 @@ class NYUv2Dataset(Dataset):
         normalize_rgb: bool = False,
         subset_pct: float = 1.0,
         subset_seed: int = 42,
+        subset_file: Optional[str] = None,
+        subset_id: Optional[str] = None,
         num_classes: int = 13,
     ):
         super().__init__()
@@ -173,6 +175,9 @@ class NYUv2Dataset(Dataset):
         self.normal_layout = self.storage.get("normal_layout", "hwc")
         self.label_dtype = self.storage.get("label_dtype", "uint8")
         self.skip_runtime_nan_sanitize = bool(self.sanitized.get("runtime_safe_finite", False))
+        self.subset_file = subset_file
+        self.subset_id = subset_id
+        self.subset_metadata: Dict[str, Any] = {}
         
         if self.data_len == 0:
             logger.warning(f"[NYUv2-Axe] Split {self.split} index is EMPTY.")
@@ -184,7 +189,37 @@ class NYUv2Dataset(Dataset):
         # --- Build Index (Subset support) ---
         all_indices = list(range(self.data_len))
         
-        if 0.0 < subset_pct < 1.0:
+        if self.split == "train" and subset_file:
+            subset_path = Path(subset_file)
+            if not subset_path.is_absolute():
+                subset_path = subset_path.resolve()
+            if not subset_path.exists():
+                raise FileNotFoundError(f"[NYUv2] Subset file missing at: {subset_path}")
+
+            with subset_path.open("r", encoding="utf-8") as handle:
+                subset_payload = json.load(handle)
+
+            indices = subset_payload.get("indices")
+            if not isinstance(indices, list) or not indices:
+                raise ValueError(f"[NYUv2] Subset file '{subset_path}' does not contain a non-empty 'indices' list.")
+
+            invalid = [idx for idx in indices if not isinstance(idx, int) or idx < 0 or idx >= self.data_len]
+            if invalid:
+                raise ValueError(
+                    f"[NYUv2] Subset file '{subset_path}' contains invalid train indices; "
+                    f"first invalid entries: {invalid[:5]}"
+                )
+
+            self.indices = sorted(indices)
+            self.subset_metadata = subset_payload.get("metadata", {})
+            if not self.subset_id:
+                self.subset_id = subset_payload.get("subset_id")
+            logger.info(
+                "[NYUv2] Paper subset active: %s (%d samples)",
+                self.subset_id or subset_path.name,
+                len(self.indices),
+            )
+        elif 0.0 < subset_pct < 1.0:
             import random
             rng = random.Random(subset_seed)
             num_samples = max(1, int(self.data_len * subset_pct))

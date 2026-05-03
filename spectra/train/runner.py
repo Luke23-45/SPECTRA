@@ -27,7 +27,8 @@ from spectra.train.artifacts import (
     resolve_resume_checkpoint,
     stable_run_id,
     save_experiment_config,
-    save_experiment_metadata
+    save_experiment_metadata,
+    save_run_summary,
 )
 from spectra.train.preflight import preflight_check
 
@@ -172,5 +173,34 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
         f"Tasks={[t.name for t in cfg.tasks]}"
     )
     
+    fit_started_at = datetime.utcnow()
     trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
+    fit_ended_at = datetime.utcnow()
+
+    checkpoint_registry = {}
+    for callback in callbacks:
+        if hasattr(callback, "monitor") and hasattr(callback, "best_model_path"):
+            checkpoint_registry[str(callback.monitor)] = {
+                "mode": getattr(callback, "mode", None),
+                "best_model_path": getattr(callback, "best_model_path", None) or None,
+                "best_model_score": (
+                    float(callback.best_model_score.item())
+                    if getattr(callback, "best_model_score", None) is not None
+                    else None
+                ),
+            }
+
+    run_summary_path = save_run_summary(
+        cfg,
+        artifact_dir,
+        {
+            "fit_started_at": fit_started_at.isoformat() + "Z",
+            "fit_ended_at": fit_ended_at.isoformat() + "Z",
+            "elapsed_seconds": (fit_ended_at - fit_started_at).total_seconds(),
+            "stopped_epoch": int(trainer.current_epoch),
+            "global_step": int(trainer.global_step),
+            "checkpoint_registry": checkpoint_registry,
+        },
+    )
+    logger.info(f"[Mission-Control] Run summary saved to: {run_summary_path}")
     logger.info("[Mission-Control] Mission Accomplished. [SUCCESS]")

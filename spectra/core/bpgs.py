@@ -1,14 +1,15 @@
 """
 spectra/core/bpgs.py
 --------------------
-Canonical B-PGS implementation for the active research path.
+Active B-PGS implementation for the paper-track research path.
 
 This is the single active B-PGS method in the repo:
   - bounded log-variance chart
   - detached precision in the network flow
   - raw batch losses for the uncertainty flow
-  - adaptive CV-based temperature (default) or fixed temperature
-  - no EMA, no R_eps, no auto-calibration, no prior term
+  - adaptive CV-based temperature or fixed temperature
+  - optional one-shot auto-calibration
+  - no EMA, no R_eps, no prior term
 
 Adaptive Temperature:
   Default behavior uses adaptive temperature based on batch statistics:
@@ -54,6 +55,8 @@ class BPGS(nn.Module):
         num_tasks: int,
         eps_clip: float = 1e-8,
         temperature: float | None = None,  # None = use adaptive CV-based
+        auto_calibrate: bool = True,
+        theta_grad_scale: float = 100.0,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -61,11 +64,11 @@ class BPGS(nn.Module):
             raise ValueError(f"num_tasks must be positive; got {num_tasks}.")
         self.num_tasks = num_tasks
         self.temperature = temperature  # None = use adaptive CV-based
+        self.auto_calibrate_enabled = bool(auto_calibrate)
+        self.theta_grad_scale = float(theta_grad_scale)
         self.eps_clip = float(eps_clip)
 
-        # SVAM Topological Limit via Samuelson's Inequality: 
-        # Mathematically guarantees non-saturation for any number of tasks.
-        # Max Z-score for T tasks is exactly sqrt(T-1).
+        # Bounded latent radius used by the active chart.
         self.topological_limit = math.sqrt(num_tasks - 1) + 0.1 
         self.register_buffer("last_mu", torch.zeros(1))
         self.register_buffer("last_sigma", torch.ones(1))
@@ -75,9 +78,8 @@ class BPGS(nn.Module):
 
     def auto_calibrate(self, raw_losses: List[torch.Tensor]) -> None:
         """
-        NASA-Grade Initialization:
-        Analytically project the B-PGS manifold to the physical loss landscape on Step 0.
-        Eliminates 'Theta Inertia' without needing hyperparameter hacks.
+        One-shot initialization that maps the first batch loss landscape into
+        the bounded latent chart.
         """
         with torch.no_grad():
             detached_losses = torch.stack([l.detach() for l in raw_losses])
@@ -115,7 +117,7 @@ class BPGS(nn.Module):
             mu = self.last_mu[0]
             sigma = self.last_sigma[0]
 
-        theta_scaled = GradScale.apply(self.theta, 100.0)
+        theta_scaled = GradScale.apply(self.theta, self.theta_grad_scale)
         Z = self.topological_limit * (2 * torch.sigmoid(theta_scaled) - 1.0)
         return mu + Z * sigma
 
@@ -128,6 +130,12 @@ class BPGS(nn.Module):
         High CV (dispersed losses) → higher temperature (more smoothing)
         Low CV (similar losses) → lower temperature (sharper competition)
         """
+        if raw_losses is None:
+            mu = self.last_mu[0]
+            sigma = self.last_sigma[0]
+            cv = sigma / mu.abs().clamp(min=self.eps_clip)
+            return torch.clamp(cv * 2.0, min=0.1, max=5.0)
+
         if isinstance(raw_losses, list):
             losses = torch.stack([l.detach() for l in raw_losses])
         else:
@@ -143,13 +151,9 @@ class BPGS(nn.Module):
         return T
 
     def network_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
-        """Base flow objective for network parameters with Stateless Temperature Equalization."""
+        """Network objective with detached temperature-softmax precision weights."""
         s = self.get_s(raw_losses)
-        
-        # SOTA Empirical Scale-Equalization
-        # To perfectly align with UWSO (which uses Softmax((1/L) / T)),
-        # we map our Bayesian precision (exp(-s)) into the Softmax.
-        # We drop 'num_tasks' and '0.5' to match UWSO's sum=1.0 weighting scale.
+
         if self.temperature is None:
             T = self._compute_temperature(raw_losses)
         else:
@@ -164,16 +168,14 @@ class BPGS(nn.Module):
 
 
     def uncertainty_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
-        """Fiber flow objective for strictly bounded Canonical uncertainty weighting."""
-        if getattr(self, "_calibrated", False) is False:
+        """Uncertainty objective for the bounded split-update BPGS path."""
+        if self.auto_calibrate_enabled and getattr(self, "_calibrated", False) is False:
             self.auto_calibrate(raw_losses)
             self._calibrated = True
 
         s = self.get_s(raw_losses)
         precision = torch.exp(-s)
 
-        # 1. Pure detachment respects the foundational split-optimization rules.
-        # No scalar normalizations are allowed. Let B-PGS natively fight the absolute scale imbalances!
         total_loss = 0
         for i, loss in enumerate(raw_losses):
             total_loss = total_loss + 0.5 * precision[i] * loss.detach() + 0.5 * s[i]
@@ -210,7 +212,6 @@ class BPGS(nn.Module):
         """Return current normalized statistics for proper monitoring telemetry."""
         with torch.no_grad():
             s = self.get_s()
-            # Calculate what the network ACTUALLY receives, rather than raw exp(-s)
             if self.temperature is None:
                 T = self._compute_temperature(None)
             else:

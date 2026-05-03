@@ -4,8 +4,10 @@ use_alb: false
 
 method:
   name: bpgs
-  temperature: 6.0 # Softened precision competition; stronger than UWSO on hard mixed-loss head-to-head
-  kappa: 0.1       # Anti-Kendall exponent: mild hard-task focus (κ=0 is Kendall, κ=0.1 is near-balanced)
+  temperature: 6.0
+  auto_calibrate: true
+  theta_grad_scale: 100.0
+  kappa: 0.1
 
 module:
   engine:

@@ -68,6 +68,13 @@ def stable_run_id(cfg: DictConfig) -> str:
     return safe or "unnamed-run"
 
 
+def resolve_selection_config(cfg: DictConfig) -> Dict[str, str]:
+    train_cfg = cfg.get("train", {})
+    monitor = str(train_cfg.get("selection_metric", "val/total_loss"))
+    mode = str(train_cfg.get("selection_mode", "min"))
+    return {"metric": monitor, "mode": mode}
+
+
 def _get_git_info() -> Dict[str, Any]:
     """Get git commit hash, branch, and dirty status."""
     git_info = {
@@ -177,7 +184,9 @@ def generate_experiment_metadata(cfg: DictConfig, artifact_dir: Path) -> Dict[st
         "name": dataset_name,
         "augmentation": cfg.get("augmentation", False),
         "subset_pct": cfg.get("subset_pct", 1.0),
-        "subset_seed": cfg.get("subset_seed", 42)
+        "subset_seed": cfg.get("subset_seed", 42),
+        "train_subset_file": cfg.get("train_subset_file", None),
+        "train_subset_id": cfg.get("train_subset_id", None),
     }
     
     # Add dataset-specific fields
@@ -239,7 +248,9 @@ def generate_experiment_metadata(cfg: DictConfig, artifact_dir: Path) -> Dict[st
             "deterministic": train_cfg.get("deterministic", False),
             "early_stop": train_cfg.get("early_stop", False),
             "early_stop_patience": train_cfg.get("early_stop_patience", 0),
-            "checkpoint_every_minutes": train_cfg.get("checkpoint_every_minutes", 0)
+            "checkpoint_every_minutes": train_cfg.get("checkpoint_every_minutes", 0),
+            "selection_metric": resolve_selection_config(cfg)["metric"],
+            "selection_mode": resolve_selection_config(cfg)["mode"],
         },
         "resume": {
             "requested": None if cfg.get("resume_from", None) in (None, "", False) else str(cfg.get("resume_from")),
@@ -276,3 +287,46 @@ def save_experiment_metadata(cfg: DictConfig, artifact_dir: Path) -> Path:
         json.dump(metadata, f, indent=2, default=str)
     
     return metadata_path
+
+
+def _checkpoint_epoch_from_path(path: str | None) -> Optional[int]:
+    if not path:
+        return None
+    match = re.search(r"ep(\d+)", str(path))
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def save_run_summary(
+    cfg: DictConfig,
+    artifact_dir: Path,
+    summary: Dict[str, Any],
+) -> Path:
+    """
+    Save a post-fit execution summary used by paper aggregation scripts.
+    """
+    selection = resolve_selection_config(cfg)
+    checkpoint_registry = summary.get("checkpoint_registry", {})
+    selected = checkpoint_registry.get(selection["metric"], {})
+
+    normalized_summary = {
+        "fit_started_at": summary.get("fit_started_at"),
+        "fit_ended_at": summary.get("fit_ended_at"),
+        "elapsed_seconds": summary.get("elapsed_seconds"),
+        "stopped_epoch": summary.get("stopped_epoch"),
+        "global_step": summary.get("global_step"),
+        "selection_metric": selection["metric"],
+        "selection_mode": selection["mode"],
+        "selected_checkpoint": {
+            "path": selected.get("best_model_path"),
+            "score": selected.get("best_model_score"),
+            "epoch": _checkpoint_epoch_from_path(selected.get("best_model_path")),
+        },
+        "checkpoint_registry": checkpoint_registry,
+    }
+
+    summary_path = artifact_dir / "run_summary.json"
+    with summary_path.open("w", encoding="utf-8") as handle:
+        json.dump(normalized_summary, handle, indent=2, default=str)
+    return summary_path

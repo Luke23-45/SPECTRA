@@ -199,6 +199,8 @@ class SPECTRADataModule(pl.LightningDataModule):
             root = _cfg_lookup(self.cfg, "root")
             subset_pct = _cfg_lookup(self.cfg, "subset_pct", 1.0)
             subset_seed = _cfg_lookup(self.cfg, "subset_seed", 42)
+            train_subset_file = _cfg_lookup(self.cfg, "train_subset_file", None)
+            train_subset_id = _cfg_lookup(self.cfg, "train_subset_id", None)
             normalize_rgb = _cfg_lookup(self.cfg, "normalize_rgb", False)
             augmentation = _cfg_lookup(self.cfg, "augmentation", True)
             use_batch_aug = _use_nyuv2_batch_augmentation(self.cfg)
@@ -209,13 +211,15 @@ class SPECTRADataModule(pl.LightningDataModule):
                 augmentation=(augmentation and not use_batch_aug),
                 subset_pct=subset_pct,
                 subset_seed=subset_seed,
+                subset_file=train_subset_file,
+                subset_id=train_subset_id,
                 normalize_rgb=(normalize_rgb and not use_batch_aug),
             )
             self.val_ds = NYUv2Dataset(
                 root=root,
                 split="val",
                 augmentation=False,
-                subset_pct=subset_pct,
+                subset_pct=1.0,
                 subset_seed=subset_seed,
                 normalize_rgb=normalize_rgb,
             )

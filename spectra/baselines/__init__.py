@@ -30,6 +30,8 @@ def build_weighter(cfg):
         return BPGS(
             num_tasks=len(cfg.tasks),
             temperature=m_cfg.get("temperature", None),  # None = adaptive CV-based
+            auto_calibrate=m_cfg.get("auto_calibrate", True),
+            theta_grad_scale=m_cfg.get("theta_grad_scale", 100.0),
         )
 
     cls = WEIGHTER_REGISTRY.get(name)
