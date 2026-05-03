@@ -1,24 +1,25 @@
 """
 spectra/core/bpgs.py
 --------------------
-Active B-PGS implementation for the paper-track research path.
+Version 3: Stateless B-PGS with pure theta-based parameterization.
 
-This is the single active B-PGS method in the repo:
-  - bounded log-variance chart
-  - detached precision in the network flow
-  - raw batch losses for the uncertainty flow
-  - adaptive CV-based temperature or fixed temperature
-  - optional one-shot auto-calibration
-  - no EMA, no R_eps, no prior term
+This version removes all batch-stat dependence from the uncertainty manifold:
+  - s depends only on theta (no mu/sigma from batch)
+  - learnable global temperature (tau) instead of CV-based
+  - fixed initialization (s_init) instead of auto-calibration
+  - no cached state (no last_mu/last_sigma)
+  - classical detached weights for network flow
+  - classical uncertainty objective
 
-Adaptive Temperature:
-  Default behavior uses adaptive temperature based on batch statistics:
-    T = σ(log_L) / |μ(log_L)| × 2.0
-  
-  High loss dispersion (CV) → higher temperature (more smoothing)
-  Low loss dispersion (CV) → lower temperature (sharper competition)
-  
-  For fixed temperature, pass temperature=<value> to __init__.
+Active method definition:
+  s_i = s_min + (s_max - s_min) * sigmoid(theta_i)
+  omega_i = exp(-s_i)
+  J_net = sum_i stopgrad(omega_i) * L_i
+  J_unc = sum_i [0.5 * omega_i * detach(L_i) + 0.5 * s_i]
+
+Optional learnable temperature:
+  T = softplus(tau) + 0.1
+  Applied only to network-side normalization (not to uncertainty manifold).
 """
 
 import math
@@ -26,6 +27,7 @@ from typing import Dict, List, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class GradScale(torch.autograd.Function):
@@ -53,133 +55,83 @@ class BPGS(nn.Module):
     def __init__(
         self,
         num_tasks: int,
+        s_min: float = -10.0,
+        s_max: float = 10.0,
+        s_init: float = 0.0,
         eps_clip: float = 1e-8,
-        temperature: float | None = None,  # None = use adaptive CV-based
-        auto_calibrate: bool = True,
+        learnable_temperature: bool = False,
         theta_grad_scale: float = 100.0,
         **kwargs,
     ) -> None:
         super().__init__()
         if num_tasks < 1:
             raise ValueError(f"num_tasks must be positive; got {num_tasks}.")
+        if s_min >= s_max:
+            raise ValueError(f"s_min must be strictly less than s_max; got {s_min} >= {s_max}.")
+
         self.num_tasks = num_tasks
-        self.temperature = temperature  # None = use adaptive CV-based
-        self.auto_calibrate_enabled = bool(auto_calibrate)
-        self.theta_grad_scale = float(theta_grad_scale)
+        self.s_min = float(s_min)
+        self.s_max = float(s_max)
         self.eps_clip = float(eps_clip)
+        self.theta_grad_scale = float(theta_grad_scale)
 
-        # Bounded latent radius used by the active chart.
-        self.topological_limit = math.sqrt(num_tasks - 1) + 0.1 
-        self.register_buffer("last_mu", torch.zeros(1))
-        self.register_buffer("last_sigma", torch.ones(1))
-        
-        self.theta = nn.Parameter(torch.zeros(num_tasks))
-        self._calibrated = False
+        # Fixed bounds for pure theta-based parameterization
+        self.register_buffer("s_min_v", torch.full((num_tasks,), s_min))
+        self.register_buffer("s_max_v", torch.full((num_tasks,), s_max))
 
-    def auto_calibrate(self, raw_losses: List[torch.Tensor]) -> None:
-        """
-        One-shot initialization that maps the first batch loss landscape into
-        the bounded latent chart.
-        """
-        with torch.no_grad():
-            detached_losses = torch.stack([l.detach() for l in raw_losses])
-            log_L = torch.log(detached_losses.clamp(min=self.eps_clip))
-            mu = log_L.mean()
-            sigma = log_L.std(unbiased=False).clamp(min=1e-4)
+        # Initialize theta so s starts at s_init
+        p = (s_init - s_min) / (s_max - s_min)
+        p = max(1e-4, min(1.0 - 1e-4, p))
+        theta_init = math.log(p / (1.0 - p))
+        self.theta = nn.Parameter(torch.full((num_tasks,), theta_init))
 
-            for i, l in enumerate(raw_losses):
-                opt_s = torch.log(l.clamp(min=self.eps_clip))
-                
-                # Project to Z-space
-                Z_target = (opt_s - mu) / sigma
-                Z_bounded = torch.clamp(Z_target, -self.topological_limit, self.topological_limit)
-                
-                # Inverse sigmoid to calculate the exact theta
-                sig_val = (Z_bounded + self.topological_limit) / (2 * self.topological_limit)
-                sig_val = torch.clamp(sig_val, 1e-4, 1.0 - 1e-4)
-                
-                self.theta.data[i] = -torch.log(1.0 / sig_val - 1.0)
+        # Learnable global temperature (optional)
+        self.learnable_temperature = bool(learnable_temperature)
+        if learnable_temperature:
+            self.tau = nn.Parameter(torch.tensor(0.0))  # T = softplus(tau) + 0.1
+        else:
+            self.register_buffer("tau", torch.tensor(0.0))
+
 
 
     def get_s(self, raw_losses=None) -> torch.Tensor:
-        """Project theta to the bounded log-variance manifold using SVAM."""
-        if raw_losses is not None:
-            if isinstance(raw_losses, torch.Tensor):
-                detached_losses = raw_losses.detach()
-            else:
-                detached_losses = torch.stack([l.detach() for l in raw_losses])
-            log_L = torch.log(detached_losses.clamp(min=self.eps_clip))
-            mu = log_L.mean()
-            sigma = log_L.std(unbiased=False).clamp(min=1e-4)
-            self.last_mu[0] = mu
-            self.last_sigma[0] = sigma
-        else:
-            mu = self.last_mu[0]
-            sigma = self.last_sigma[0]
-
+        """
+        Project theta to bounded log-variance manifold (pure parameterization).
+        
+        Note: raw_losses parameter is ignored (kept for backward compatibility).
+        """
         theta_scaled = GradScale.apply(self.theta, self.theta_grad_scale)
-        Z = self.topological_limit * (2 * torch.sigmoid(theta_scaled) - 1.0)
-        return mu + Z * sigma
+        return self.s_min_v + (self.s_max_v - self.s_min_v) * torch.sigmoid(theta_scaled)
 
-    def _compute_temperature(self, raw_losses: List[torch.Tensor] | torch.Tensor) -> torch.Tensor:
-        """
-        Adaptive temperature based on coefficient of variation of log-losses.
-        
-        T = σ(log_L) / |μ(log_L)| × 2.0
-        
-        High CV (dispersed losses) → higher temperature (more smoothing)
-        Low CV (similar losses) → lower temperature (sharper competition)
-        """
-        if raw_losses is None:
-            mu = self.last_mu[0]
-            sigma = self.last_sigma[0]
-            cv = sigma / mu.abs().clamp(min=self.eps_clip)
-            return torch.clamp(cv * 2.0, min=0.1, max=5.0)
-
-        if isinstance(raw_losses, list):
-            losses = torch.stack([l.detach() for l in raw_losses])
-        else:
-            losses = raw_losses.detach()
-        
-        log_L = torch.log(losses.clamp(min=self.eps_clip))
-        mu = log_L.mean()
-        sigma = log_L.std(unbiased=False)
-        cv = sigma / mu.abs().clamp(min=self.eps_clip)
-        
-        # Scale to reasonable range [0.5, 5.0]
-        T = torch.clamp(cv * 2.0, min=0.1, max=5.0)
-        return T
 
     def network_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
-        """Network objective with detached temperature-softmax precision weights."""
-        s = self.get_s(raw_losses)
+        """Network objective with classical detached precision weights."""
+        s = self.get_s()
+        precision = torch.exp(-s).detach()
 
-        if self.temperature is None:
-            T = self._compute_temperature(raw_losses)
+        # Optional: normalize to sum to 1 for competition
+        if self.learnable_temperature:
+            T = F.softplus(self.tau) + 0.1
+            weights = torch.softmax(precision / T, dim=0)  # no detach: allow tau to learn
         else:
-            T = self.temperature
-        equalized_weights = torch.softmax(torch.exp(-s) / T, dim=0).detach()
+            weights = precision
 
         total_loss = 0
         for i, loss in enumerate(raw_losses):
-            total_loss = total_loss + equalized_weights[i] * loss
+            total_loss = total_loss + weights[i] * loss
         return total_loss
 
 
 
     def uncertainty_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
-        """Uncertainty objective for the bounded split-update BPGS path."""
-        if self.auto_calibrate_enabled and getattr(self, "_calibrated", False) is False:
-            self.auto_calibrate(raw_losses)
-            self._calibrated = True
-
-        s = self.get_s(raw_losses)
+        """Classical uncertainty objective for the bounded split-update BPGS path."""
+        s = self.get_s()
         precision = torch.exp(-s)
 
         total_loss = 0
         for i, loss in enumerate(raw_losses):
             total_loss = total_loss + 0.5 * precision[i] * loss.detach() + 0.5 * s[i]
-            
+
         return total_loss
 
 
@@ -189,38 +141,45 @@ class BPGS(nn.Module):
         The active optimization path uses `network_loss` and `uncertainty_loss`.
         """
         with torch.no_grad():
-            s = self.get_s(losses)
-            if self.temperature is None:
-                T = self._compute_temperature(losses)
+            s = self.get_s()
+            precision = torch.exp(-s)
+
+            if self.learnable_temperature:
+                T = F.softplus(self.tau) + 0.1
+                weights = torch.softmax(precision / T, dim=0)
             else:
-                T = self.temperature
-            equalized_weights = torch.softmax(torch.exp(-s) / T, dim=0)
-            total = (equalized_weights * losses).sum()
+                weights = precision
+
+            total = (weights * losses).sum()
 
         metrics: Dict[str, torch.Tensor] = {
             "bpgs/total_loss": total,
-            "bpgs/weights_mean": equalized_weights.mean(),
-            "bpgs/weights_min": equalized_weights.min(),
-            "bpgs/weights_max": equalized_weights.max(),
+            "bpgs/weights_mean": weights.mean(),
+            "bpgs/weights_min": weights.min(),
+            "bpgs/weights_max": weights.max(),
         }
         for i in range(self.num_tasks):
             metrics[f"bpgs/s_{i}"] = s[i]
-            metrics[f"bpgs/weight_{i}"] = equalized_weights[i]
+            metrics[f"bpgs/weight_{i}"] = weights[i]
         return total, metrics
 
     def get_task_stats(self) -> Dict[str, float]:
-        """Return current normalized statistics for proper monitoring telemetry."""
+        """Return current uncertainty statistics for logging."""
         with torch.no_grad():
             s = self.get_s()
-            if self.temperature is None:
-                T = self._compute_temperature(None)
+            precision = torch.exp(-s)
+
+            if self.learnable_temperature:
+                T = F.softplus(self.tau) + 0.1
+                weights = torch.softmax(precision / T, dim=0)
             else:
-                T = self.temperature
-            equalized_weights = torch.softmax(torch.exp(-s) / T, dim=0)
+                weights = precision
 
         stats: Dict[str, float] = {}
         for i in range(self.num_tasks):
             stats[f"bpgs/log_var_{i}"] = s[i].item()
-            stats[f"bpgs/weight_{i}"] = equalized_weights[i].item()
+            stats[f"bpgs/weight_{i}"] = weights[i].item()
             stats[f"bpgs/theta_{i}"] = self.theta[i].item()
+        if self.learnable_temperature:
+            stats["bpgs/temperature"] = T.item()
         return stats
