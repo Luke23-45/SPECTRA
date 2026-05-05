@@ -5,9 +5,10 @@ The Core Execution Runner.
 Composes the pieces (Module, DataModule, Callbacks, Hydra) and executes.
 """
 
-import torch
 import logging
+import os
 from pathlib import Path
+import torch
 from omegaconf import DictConfig, OmegaConf
 import pytorch_lightning as pl
 from datetime import datetime
@@ -19,8 +20,9 @@ from spectra.data.datamodule import SPECTRADataModule
 from spectra.engine.callbacks import GradientHealthCallback
 
 from spectra.utils.callbacks import build_checkpoints, build_early_stopping
-from spectra.utils.progress import SOTAProgressBar
+from spectra.utils.progress import build_progress_bar
 from spectra.utils.config import _merge_dataset_defaults
+from spectra.utils.seed import configure_reproducibility
 from spectra.utils.wandb import WandbSession, WandbSettings
 from spectra.train.artifacts import (
     resolve_artifact_dir,
@@ -39,12 +41,24 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     The orchestrator for the entire SPECTRA training lifecycle.
     """
     # 1. Environment & Seeding
+    deterministic = bool(cfg.train.get("deterministic", False))
+    deterministic_warn_only = bool(cfg.train.get("deterministic_warn_only", False))
+    configure_reproducibility(
+        deterministic=deterministic,
+        warn_only=deterministic_warn_only,
+    )
     pl.seed_everything(cfg.get("seed", 42), workers=True)
 
     artifact_dir = resolve_artifact_dir(cfg)
 
     logger.info(f"[Mission-Control] Workspace: {output_dir}")
     logger.info(f"[Mission-Control] Stable Artifact Dir: {artifact_dir}")
+    logger.info(
+        "[Mission-Control] Reproducibility: deterministic=%s warn_only=%s cublas=%s",
+        deterministic,
+        deterministic_warn_only,
+        str(os.environ.get("CUBLAS_WORKSPACE_CONFIG", "")),
+    )
     logger.info(f"[Mission-Control] Config:\n{OmegaConf.to_yaml(cfg)}")
 
     # 2. Configuration Integrity 
@@ -85,7 +99,7 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
         *build_checkpoints(cfg, artifact_dir),
         GradientHealthCallback(check_interval=50),
         LearningRateMonitor(logging_interval="step"),
-        SOTAProgressBar(refresh_rate=1),
+        build_progress_bar(cfg),
     ]
     es_cb = build_early_stopping(cfg)
     if es_cb is not None:
@@ -130,7 +144,7 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
         logger.info(f"[Logging] WandB logger initialized in stable artifact dir: {wandb_session.local_dir}")
 
     # 8. Trainer Configuration
-    if torch.cuda.is_available() and not cfg.train.get("deterministic", False):
+    if torch.cuda.is_available() and not deterministic:
         torch.backends.cudnn.benchmark = True
 
     gradient_clip_val = cfg.train.get("grad_clip", 1.0)
@@ -152,7 +166,8 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
         callbacks=callbacks,
         logger=loggers,
         log_every_n_steps=cfg.train.get("log_every_n_steps", 10),
-        deterministic=cfg.train.get("deterministic", False),
+        deterministic=deterministic,
+        benchmark=(False if deterministic else None),
         enable_checkpointing=cfg.train.get("save_ckpt", True),
     )
 

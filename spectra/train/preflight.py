@@ -99,6 +99,16 @@ def preflight_check(cfg: DictConfig, output_dir: Path) -> None:
     if not tasks:
         errors.append("cfg.tasks is empty — no tasks configured. Check your dataset config.")
 
+    train_cfg = cfg.get("train", {})
+    deterministic = bool(train_cfg.get("deterministic", False))
+    batch_augmentation = cfg.get("batch_augmentation", cfg.get("dataset", {}).get("batch_augmentation", "disabled"))
+    if dataset_name == "nyuv2" and deterministic and str(batch_augmentation).lower() == "cuda":
+        errors.append(
+            "NYUv2 deterministic mode is incompatible with batch_augmentation=cuda. "
+            "PyTorch documents CUDA backward for grid_sample as nondeterministic. "
+            "Use batch_augmentation=cpu or disabled for reproducible runs."
+        )
+
     # 3. Method name must be valid
     valid_methods = {"bpgs", "kendall", "uwso", "pcgrad", "gradnorm_proxy", "static"}
     method_name = cfg.get("method_name") or cfg.get("method", {}).get("name", "unknown")
@@ -118,6 +128,8 @@ def preflight_check(cfg: DictConfig, output_dir: Path) -> None:
     ckpt_path = resolve_resume_checkpoint(cfg, artifact_dir)
     if raw_resume not in (None, "", False) and str(raw_resume).strip().lower() != "auto" and ckpt_path is not None and not ckpt_path.exists():
         errors.append(f"Resume checkpoint not found: {ckpt_path}\n  → Check the path or remove 'resume_from' from config.")
+    if str(raw_resume).strip().lower() == "auto" and not bool(train_cfg.get("save_ckpt", True)):
+        errors.append("resume_from=auto requires train.save_ckpt=true so last.ckpt can exist.")
 
     # 6. GPU memory sanity (warn only, do not block)
     require_cuda = bool(cfg.get("require_cuda", False))

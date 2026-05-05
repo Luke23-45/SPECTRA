@@ -5,8 +5,11 @@ Mission Control for SPECTRA Experiments.
 Sterile Entry Point — all orchestration is delegated to `spectra.train.runner`.
 """
 
+import os
 import sys
 from pathlib import Path
+
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 # --- Path Resolution ---
 root_dir = str(Path(__file__).resolve().parent.parent)

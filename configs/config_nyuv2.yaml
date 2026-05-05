@@ -25,8 +25,13 @@ train:
   weight_decay: 0.0001
   grad_clip: 1.0
   precision: 16-mixed    # ~2× speedup on GPU with minimal accuracy impact
-  num_workers: 2
+  num_workers: auto
   log_every_n_steps: 10
+  progress:
+    type: sota
+    refresh_rate: 1
+    update_interval_seconds: 15
+  deterministic_warn_only: false
 
 # ─── Logging ─────────────────────────────────────────────────
 logging:

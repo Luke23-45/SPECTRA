@@ -7,6 +7,7 @@ Stable artifact and resume-path utilities for long-running training jobs.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -126,6 +127,16 @@ def _get_system_info() -> Dict[str, Any]:
         "cuda_available": torch.cuda.is_available(),
         "cuda_version": torch.version.cuda if torch.cuda.is_available() else None,
         "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+        "cudnn_deterministic": torch.backends.cudnn.deterministic,
+        "cudnn_benchmark": torch.backends.cudnn.benchmark,
+        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+        "tf32_matmul": (
+            torch.backends.cuda.matmul.allow_tf32
+            if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda.matmul, "allow_tf32")
+            else None
+        ),
+        "tf32_cudnn": getattr(torch.backends.cudnn, "allow_tf32", None),
         "platform": platform.system(),
         "platform_release": platform.release(),
         "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
@@ -246,11 +257,13 @@ def generate_experiment_metadata(cfg: DictConfig, artifact_dir: Path) -> Dict[st
             "precision": train_cfg.get("precision", "32"),
             "num_workers": train_cfg.get("num_workers", 0),
             "deterministic": train_cfg.get("deterministic", False),
+            "deterministic_warn_only": train_cfg.get("deterministic_warn_only", False),
             "early_stop": train_cfg.get("early_stop", False),
             "early_stop_patience": train_cfg.get("early_stop_patience", 0),
             "checkpoint_every_minutes": train_cfg.get("checkpoint_every_minutes", 0),
             "selection_metric": resolve_selection_config(cfg)["metric"],
             "selection_mode": resolve_selection_config(cfg)["mode"],
+            "progress": OmegaConf.to_container(train_cfg.get("progress", {}), resolve=True),
         },
         "resume": {
             "requested": None if cfg.get("resume_from", None) in (None, "", False) else str(cfg.get("resume_from")),

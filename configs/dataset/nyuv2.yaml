@@ -84,10 +84,15 @@ train:
   weight_decay: 0.0001
   grad_clip: 1.0
   precision: 16-mixed
-  num_workers: 2
+  num_workers: auto
   prefetch_factor: 2
   log_every_n_steps: 10
+  progress:
+    type: minimal
+    refresh_rate: 1
+    update_interval_seconds: 15
   deterministic: false
+  deterministic_warn_only: false
   early_stop: true
   early_stop_patience: 15
   early_stop_min_delta: 0.0001

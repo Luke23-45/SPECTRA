@@ -17,6 +17,28 @@ import torch
 logger = logging.getLogger("spectra.seed")
 
 
+def configure_reproducibility(deterministic: bool = True, warn_only: bool = False) -> None:
+    """
+    Configure backend-level determinism controls.
+
+    This should run before training starts so CUDA/cuDNN/cuBLAS behavior is
+    locked before the first kernels that matter for training are launched.
+    """
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda.matmul, "allow_tf32"):
+            torch.backends.cuda.matmul.allow_tf32 = False
+        if hasattr(torch.backends, "cudnn") and hasattr(torch.backends.cudnn, "allow_tf32"):
+            torch.backends.cudnn.allow_tf32 = False
+        torch.use_deterministic_algorithms(True, warn_only=warn_only)
+    else:
+        torch.use_deterministic_algorithms(False)
+        torch.backends.cudnn.deterministic = False
+
+
 def seed_everything(seed: int = 42, deterministic: bool = True) -> None:
     """
     Set all random seeds for full reproducibility.
@@ -32,11 +54,7 @@ def seed_everything(seed: int = 42, deterministic: bool = True) -> None:
     torch.cuda.manual_seed_all(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
 
-    if deterministic:
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        # warn_only=True avoids crashing on non-deterministic scatter_add
-        torch.use_deterministic_algorithms(True, warn_only=True)
+    configure_reproducibility(deterministic=deterministic, warn_only=False)
 
     logger.info(f"[Seed] All RNGs seeded to {seed} (deterministic={deterministic})")
 

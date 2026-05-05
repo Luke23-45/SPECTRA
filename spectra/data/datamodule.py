@@ -61,18 +61,34 @@ def _loader_kwargs(dataset_name: str, num_workers: int, cfg: DictConfig) -> Dict
     return kwargs
 
 
-def _default_num_workers() -> int:
-    """Choose a conservative default that avoids worker oversubscription."""
+def _auto_num_workers() -> int:
+    """Choose the optimal worker count based on available hardware.
+
+    Strategy:
+    - Reserve 1-2 cores for the main training process.
+    - If a CUDA GPU is present, workers are mostly doing I/O / augmentation
+      so we can afford more parallelism (up to cpu_count - 1).
+    - On CPU-only training, be more conservative (up to cpu_count - 2).
+    - Floor at 2, ceiling at 16 to avoid oversubscription on very large machines.
+    """
     cpu_count = os.cpu_count() or 1
-    # Keep one core for the trainer / main process and avoid the prior hard-coded 4.
-    return max(0, min(2, cpu_count - 1))
+    has_cuda = torch.cuda.is_available()
+    reserved = 1 if has_cuda else 2
+    workers = max(2, min(16, cpu_count - reserved))
+    return workers
 
 
 def _resolve_num_workers(cfg: DictConfig) -> int:
     configured = cfg.train.get("num_workers", None)
-    if configured is None:
-        return _default_num_workers()
+    if configured is None or configured == "auto":
+        return _auto_num_workers()
     return int(configured)
+
+
+def _make_loader_generator(seed: int) -> torch.Generator:
+    generator = torch.Generator()
+    generator.manual_seed(int(seed))
+    return generator
 
 
 def _use_nyuv2_batch_augmentation(cfg: DictConfig) -> bool:
@@ -313,6 +329,7 @@ class SPECTRADataModule(pl.LightningDataModule):
         batch_size = self.cfg.train.batch_size
         num_workers = _resolve_num_workers(self.cfg)
         loader_kwargs = _loader_kwargs(self.dataset_name, num_workers, self.cfg)
+        loader_generator = _make_loader_generator(int(self.cfg.get("seed", 42)))
         
         # Clinical requires specialized weighted sampler for sepsis oversampling
         if self.dataset_name == "clinical":
@@ -339,6 +356,7 @@ class SPECTRADataModule(pl.LightningDataModule):
                 num_workers=num_workers,
                 collate_fn=robust_collate_fn,
                 drop_last=True,
+                generator=loader_generator,
                 **loader_kwargs,
             )
         
@@ -365,12 +383,14 @@ class SPECTRADataModule(pl.LightningDataModule):
             num_workers=num_workers,
             collate_fn=collate_fn,
             drop_last=True,
+            generator=loader_generator,
             **loader_kwargs,
         )
 
     def val_dataloader(self):
         num_workers = _resolve_num_workers(self.cfg)
         loader_kwargs = _loader_kwargs(self.dataset_name, num_workers, self.cfg)
+        loader_generator = _make_loader_generator(int(self.cfg.get("seed", 42)) + 1)
         collate_fn = None
         if self.dataset_name == "nyuv2":
             collate_fn = NYUv2Dataset.collate_fn
@@ -391,5 +411,6 @@ class SPECTRADataModule(pl.LightningDataModule):
             shuffle=False,
             num_workers=num_workers,
             collate_fn=collate_fn,
+            generator=loader_generator,
             **loader_kwargs,
         )

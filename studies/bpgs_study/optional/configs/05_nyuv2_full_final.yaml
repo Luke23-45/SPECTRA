@@ -9,6 +9,17 @@ variants:
     method: static
     epochs: 120
     seeds: [42, 43, 44]
+    extra_overrides:
+      - resume_from=auto
+      - batch_augmentation=cpu
+      - train.deterministic=true
+      - train.deterministic_warn_only=false
+      - train.save_ckpt=true
+      - train.checkpoint_every_minutes=30
+      - train.selection_metric=val/miou
+      - train.selection_mode=max
+      - train.progress.type=minimal
+      - train.progress.update_interval_seconds=15
     early_stop: true
     early_stop_patience: 15
     early_stop_min_delta: 0.0001
@@ -17,6 +28,17 @@ variants:
     method: kendall
     epochs: 120
     seeds: [42, 43, 44]
+    extra_overrides:
+      - resume_from=auto
+      - batch_augmentation=cpu
+      - train.deterministic=true
+      - train.deterministic_warn_only=false
+      - train.save_ckpt=true
+      - train.checkpoint_every_minutes=30
+      - train.selection_metric=val/miou
+      - train.selection_mode=max
+      - train.progress.type=minimal
+      - train.progress.update_interval_seconds=15
     early_stop: true
     early_stop_patience: 15
     early_stop_min_delta: 0.0001
@@ -25,6 +47,17 @@ variants:
     method: uwso
     epochs: 120
     seeds: [42, 43, 44]
+    extra_overrides:
+      - resume_from=auto
+      - batch_augmentation=cpu
+      - train.deterministic=true
+      - train.deterministic_warn_only=false
+      - train.save_ckpt=true
+      - train.checkpoint_every_minutes=30
+      - train.selection_metric=val/miou
+      - train.selection_mode=max
+      - train.progress.type=minimal
+      - train.progress.update_interval_seconds=15
     early_stop: true
     early_stop_patience: 15
     early_stop_min_delta: 0.0001
@@ -33,6 +66,17 @@ variants:
     method: bpgs
     epochs: 120
     seeds: [42, 43, 44]
+    extra_overrides:
+      - resume_from=auto
+      - batch_augmentation=cpu
+      - train.deterministic=true
+      - train.deterministic_warn_only=false
+      - train.save_ckpt=true
+      - train.checkpoint_every_minutes=30
+      - train.selection_metric=val/miou
+      - train.selection_mode=max
+      - train.progress.type=minimal
+      - train.progress.update_interval_seconds=15
     early_stop: true
     early_stop_patience: 15
     early_stop_min_delta: 0.0001
