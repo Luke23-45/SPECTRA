@@ -13,7 +13,7 @@ variants:
       - resume_from=auto
       - batch_augmentation=cpu
       - train.deterministic=true
-      - train.deterministic_warn_only=false
+      - train.deterministic_warn_only=true
       - train.save_ckpt=true
       - train.checkpoint_every_minutes=30
       - train.selection_metric=val/miou
@@ -32,7 +32,7 @@ variants:
       - resume_from=auto
       - batch_augmentation=cpu
       - train.deterministic=true
-      - train.deterministic_warn_only=false
+      - train.deterministic_warn_only=true
       - train.save_ckpt=true
       - train.checkpoint_every_minutes=30
       - train.selection_metric=val/miou
@@ -51,7 +51,7 @@ variants:
       - resume_from=auto
       - batch_augmentation=cpu
       - train.deterministic=true
-      - train.deterministic_warn_only=false
+      - train.deterministic_warn_only=true
       - train.save_ckpt=true
       - train.checkpoint_every_minutes=30
       - train.selection_metric=val/miou
@@ -70,7 +70,7 @@ variants:
       - resume_from=auto
       - batch_augmentation=cpu
       - train.deterministic=true
-      - train.deterministic_warn_only=false
+      - train.deterministic_warn_only=true
       - train.save_ckpt=true
       - train.checkpoint_every_minutes=30
       - train.selection_metric=val/miou

@@ -13,7 +13,7 @@ from omegaconf import DictConfig, OmegaConf
 import pytorch_lightning as pl
 from datetime import datetime
 from pytorch_lightning.loggers import CSVLogger
-from pytorch_lightning.callbacks import LearningRateMonitor
+from pytorch_lightning.callbacks import LearningRateMonitor, TQDMProgressBar
 from hydra.utils import instantiate
 
 from spectra.data.datamodule import SPECTRADataModule
@@ -43,11 +43,11 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     # 1. Environment & Seeding
     deterministic = bool(cfg.train.get("deterministic", False))
     deterministic_warn_only = bool(cfg.train.get("deterministic_warn_only", False))
+    pl.seed_everything(cfg.get("seed", 42), workers=True)
     configure_reproducibility(
         deterministic=deterministic,
         warn_only=deterministic_warn_only,
     )
-    pl.seed_everything(cfg.get("seed", 42), workers=True)
 
     artifact_dir = resolve_artifact_dir(cfg)
 
@@ -156,6 +156,10 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
             f"Automatic PL gradient clipping disabled — engine manages clipping internally."
         )
 
+    has_tqdm_bar = any(
+        isinstance(cb, TQDMProgressBar) for cb in callbacks
+    )
+
     trainer = pl.Trainer(
         max_epochs=cfg.train.epochs,
         accelerator="auto",
@@ -166,9 +170,10 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
         callbacks=callbacks,
         logger=loggers,
         log_every_n_steps=cfg.train.get("log_every_n_steps", 10),
-        deterministic=deterministic,
+        deterministic=("warn" if deterministic and deterministic_warn_only else deterministic),
         benchmark=(False if deterministic else None),
         enable_checkpointing=cfg.train.get("save_ckpt", True),
+        enable_progress_bar=has_tqdm_bar,
     )
 
     # 9. Mission Start

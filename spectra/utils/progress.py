@@ -104,13 +104,11 @@ class SOTAProgressBar(TQDMProgressBar):
 
 class MinimalProgressBar(Callback):
     """
-    Log-safe progress reporter for notebook and hosted runtimes.
+    Log-safe progress reporter using tqdm for in-place terminal updates.
 
-    It avoids tqdm redraw spam by emitting a single concise line only at:
-    - epoch start
-    - fixed time intervals during training
-    - validation end
-    - train end
+    Updates the tqdm bar at fixed time intervals (not every batch) to keep
+    output clean in notebook and hosted runtimes while still showing live
+    progress.
     """
 
     def __init__(self, update_interval_seconds: float = 15.0):
@@ -119,13 +117,10 @@ class MinimalProgressBar(Callback):
         self._fit_start_time: float | None = None
         self._epoch_start_time: float | None = None
         self._last_emit_time: float = 0.0
+        self._bar: tqdm | None = None
 
     def _should_emit(self) -> bool:
         return (time.time() - self._last_emit_time) >= self.update_interval_seconds
-
-    def _emit(self, message: str) -> None:
-        self._last_emit_time = time.time()
-        print(message, flush=True)
 
     def _max_epochs(self, trainer: pl.Trainer) -> int | str:
         max_epochs = getattr(trainer, "max_epochs", None)
@@ -139,82 +134,95 @@ class MinimalProgressBar(Callback):
             return num_batches
         return None
 
-    def _collect_metrics(self, trainer: pl.Trainer) -> list[str]:
+    def _collect_metrics(self, trainer: pl.Trainer) -> dict[str, str]:
         metrics = trainer.callback_metrics
-        segments: list[str] = []
+        result: dict[str, str] = {}
 
         for key, label in (
             ("train/total_loss", "loss"),
             ("loss", "loss"),
-            ("val/total_loss", "val_loss"),
+            ("val/total_loss", "vL"),
             ("val/segmentation_miou", "miou"),
             ("val/depth_abs_rel", "abs_rel"),
             ("val/normals_mean_angle", "angle"),
         ):
             value = _safe_float(metrics.get(key))
             if value is not None:
-                segments.append(f"{label}={value:.4f}")
+                result[label] = f"{value:.4f}"
                 if label == "loss":
                     break
 
-        if not any(item.startswith("val_loss=") for item in segments):
+        if "vL" not in result:
             value = _safe_float(metrics.get("val_loss"))
             if value is not None:
-                segments.append(f"val_loss={value:.4f}")
+                result["vL"] = f"{value:.4f}"
 
-        return segments
+        return result
 
-    def _build_status_line(
+    def _update_bar(
         self,
         trainer: pl.Trainer,
         batch_idx: int | None = None,
         *,
         prefix: str = "train",
-    ) -> str:
+    ) -> None:
+        if self._bar is None:
+            return
+
         now = time.time()
         fit_elapsed = None if self._fit_start_time is None else now - self._fit_start_time
 
         current_epoch = int(trainer.current_epoch) + 1
         max_epochs = self._max_epochs(trainer)
         total_batches = self._num_batches(trainer)
-        if total_batches is not None and batch_idx is not None:
-            batch_display = min(batch_idx + 1, total_batches)
-            step_progress = f"batch={batch_display}/{total_batches}"
-        else:
-            step_progress = f"step={int(trainer.global_step)}"
 
-        eta_text = "eta=--:--:--"
+        if total_batches is not None and batch_idx is not None:
+            self._bar.n = batch_idx + 1
+            self._bar.total = total_batches
+        else:
+            self._bar.n = int(trainer.global_step)
+
+        self._bar.set_description(f"{prefix} ep={current_epoch}/{max_epochs}")
+
+        postfix_parts: list[str] = []
+        if fit_elapsed is not None:
+            postfix_parts.append(f"el={_format_seconds(fit_elapsed)}")
+
         if total_batches is not None and batch_idx is not None and fit_elapsed and trainer.global_step > 0:
             epochs_done = trainer.current_epoch
             completed_steps = epochs_done * total_batches + min(batch_idx + 1, total_batches)
             total_steps = total_batches * max_epochs if isinstance(max_epochs, int) else None
             if total_steps and completed_steps > 0:
                 seconds_per_step = fit_elapsed / completed_steps
-                eta_text = f"eta={_format_seconds((total_steps - completed_steps) * seconds_per_step)}"
+                postfix_parts.append(f"eta={_format_seconds((total_steps - completed_steps) * seconds_per_step)}")
 
-        parts = [
-            f"[{prefix}]",
-            f"epoch={current_epoch}/{max_epochs}",
-            step_progress,
-            f"global_step={int(trainer.global_step)}",
-            f"elapsed={_format_seconds(fit_elapsed)}",
-            eta_text,
-        ]
-        parts.extend(self._collect_metrics(trainer))
-        return " ".join(parts)
+        metrics = self._collect_metrics(trainer)
+        for k, v in metrics.items():
+            postfix_parts.append(f"{k}={v}")
+
+        self._bar.set_postfix_str(" ".join(postfix_parts))
+        self._bar.refresh()
+        self._last_emit_time = time.time()
 
     def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         self._fit_start_time = time.time()
         self._last_emit_time = 0.0
-        self._emit(
-            f"[train] start epochs={self._max_epochs(trainer)} "
-            f"batches_per_epoch={self._num_batches(trainer) or '?'} "
-            f"update_interval_s={self.update_interval_seconds:.0f}"
+        total_batches = self._num_batches(trainer) or 0
+        self._bar = tqdm(
+            total=total_batches,
+            desc="train",
+            unit="batch",
+            leave=True,
+            mininterval=self.update_interval_seconds,
+            miniters=1,
         )
 
     def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         self._epoch_start_time = time.time()
-        self._emit(self._build_status_line(trainer, batch_idx=0, prefix="train"))
+        total_batches = self._num_batches(trainer) or 0
+        if self._bar is not None:
+            self._bar.reset(total=total_batches)
+        self._update_bar(trainer, batch_idx=0, prefix="train")
 
     def on_train_batch_end(
         self,
@@ -225,19 +233,21 @@ class MinimalProgressBar(Callback):
         batch_idx: int,
     ) -> None:
         if self._should_emit():
-            self._emit(self._build_status_line(trainer, batch_idx=batch_idx, prefix="train"))
+            self._update_bar(trainer, batch_idx=batch_idx, prefix="train")
 
     def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if trainer.sanity_checking:
             return
-        self._emit(self._build_status_line(trainer, prefix="val"))
+        self._update_bar(trainer, prefix="val")
 
     def on_train_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        total_elapsed = None if self._fit_start_time is None else time.time() - self._fit_start_time
-        self._emit(
-            f"[train] done epoch={int(trainer.current_epoch) + 1}/{self._max_epochs(trainer)} "
-            f"global_step={int(trainer.global_step)} elapsed={_format_seconds(total_elapsed)}"
-        )
+        if self._bar is not None:
+            total_batches = self._num_batches(trainer) or 0
+            self._bar.n = total_batches
+            total_elapsed = None if self._fit_start_time is None else time.time() - self._fit_start_time
+            self._bar.set_postfix_str(f"done elapsed={_format_seconds(total_elapsed)}")
+            self._bar.close()
+            self._bar = None
 
 
 def build_progress_bar(cfg: DictConfig) -> Callback:
