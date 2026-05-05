@@ -172,7 +172,7 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
         log_every_n_steps=cfg.train.get("log_every_n_steps", 10),
         deterministic=False,
         benchmark=(False if deterministic else None),
-        enable_checkpointing=cfg.train.get("save_ckpt", True),
+        enable_checkpointing=cfg.train.get("save_ckpt", False),
         enable_progress_bar=has_tqdm_bar,
     )
 

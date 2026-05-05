@@ -23,7 +23,7 @@ def build_checkpoints(cfg: DictConfig, output_dir: Path) -> List[ModelCheckpoint
     """
     Build ModelCheckpoint callbacks appropriate for the benchmark.
     """
-    if not cfg.train.get("save_ckpt", True):
+    if not cfg.train.get("save_ckpt", False):
         return []
 
     ckpt_dir = output_dir / "checkpoints"
