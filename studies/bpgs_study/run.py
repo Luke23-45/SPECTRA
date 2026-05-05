@@ -37,6 +37,11 @@ def main() -> int:
     parser.add_argument("--start-from", type=int, default=1, help="1-based stage index to resume from.")
     parser.add_argument("--keep-going", action="store_true", help="Continue remaining stages after failures.")
     parser.add_argument(
+        "--skip-prep",
+        action="store_true",
+        help="Skip preparatory stages such as NYUv2 subset generation.",
+    )
+    parser.add_argument(
         "--variant",
         action="append",
         default=[],
@@ -78,6 +83,7 @@ def main() -> int:
             variant_labels=tuple(args.variant),
             seeds=tuple(args.seed),
             overrides=overrides,
+            skip_prep=args.skip_prep,
         )
         stages = entry.plan(request)
     except (KeyError, TypeError, ValueError) as exc:

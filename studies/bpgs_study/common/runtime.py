@@ -26,6 +26,7 @@ class RunRequest:
     variant_labels: tuple[str, ...] = field(default_factory=tuple)
     seeds: tuple[int, ...] = field(default_factory=tuple)
     overrides: tuple[OverrideSpec, ...] = field(default_factory=tuple)
+    skip_prep: bool = False
 
 
 def sort_studies(studies: Iterable[StudySpec]) -> list[StudySpec]:
