@@ -4,8 +4,7 @@ spectra/engine/callbacks.py
 Training infrastructure callbacks for SPECTRA.
 
 Provides:
-    1. SpectralMonitoringCallback — validates ALB frequency decoupling via FFT
-    2. GradientHealthCallback    — real gradient norm monitoring with spike alerts
+    1. GradientHealthCallback — real gradient norm monitoring with spike alerts
        (replaces the former NTKGradExplosionTracker which was a silent no-op)
 """
 
@@ -19,106 +18,6 @@ import pytorch_lightning as pl
 logger = logging.getLogger("spectra.callbacks")
 
 
-class SpectralMonitoringCallback(pl.Callback):
-    """
-    Validates ALB Mechanism: Spectral Decoupling.
-
-    Computes FFT power spectrum of the Planner vs Expert manifold
-    activations (cached by ALB during the last validation batch) to
-    verify high-frequency signals route to Expert.
-
-    Only runs when use_alb=True. No-op otherwise.
-    """
-
-    def __init__(self, log_every_n_epochs: int = 5):
-        super().__init__()
-        self.log_every_n_epochs = log_every_n_epochs
-
-    @torch.no_grad()
-    def on_validation_epoch_end(
-        self, trainer: pl.Trainer, pl_module: pl.LightningModule
-    ):
-        if not getattr(pl_module, "use_alb", False):
-            return
-
-        if (trainer.current_epoch + 1) % self.log_every_n_epochs != 0:
-            return
-
-        alb = getattr(pl_module, "alb", None)
-        if alb is None:
-            return
-
-        # Fetch sequence-level contexts (patched in v3.2 SOTA SQUID)
-        p_ctx = getattr(alb, "last_planner_ctx_seq", None)  
-        e_ctx = getattr(alb, "last_expert_ctx_seq", None)   
-
-        if p_ctx is None or e_ctx is None:
-            return
-
-        # Handle T=1 Tabular/Synthetic Edge Case
-        if p_ctx.dim() == 3 and p_ctx.shape[1] == 1:
-            logger.info(
-                f"[Spectral-Audit] Epoch {trainer.current_epoch}: "
-                f"Skipping FFT analysis. Input is tabular/synthetic (T=1). "
-                f"High-frequency temporal separation is mathematically undefined for length-1 sequences."
-            )
-            return
-
-        # Detach and ensure fp32 for FFT stability
-        p_ctx = p_ctx.detach().float().cpu()
-        e_ctx = e_ctx.detach().float().cpu()
-
-        if p_ctx.dim() == 3:
-            # 1D Temporal: [B, T, D]
-            # FFT over temporal dimension (dim=1)
-            p_fft = torch.fft.rfft(p_ctx, dim=1).abs()  # [B, T//2+1, D]
-            e_fft = torch.fft.rfft(e_ctx, dim=1).abs()
-            
-            # Average over channels and batch
-            p_fft = p_fft.mean(dim=(0, 2))  # [T//2+1]
-            e_fft = e_fft.mean(dim=(0, 2))
-            
-            mid = max(1, len(p_fft) // 2)
-            p_low, p_high = p_fft[:mid].mean().item(), p_fft[mid:].mean().item()
-            e_low, e_high = e_fft[:mid].mean().item(), e_fft[mid:].mean().item()
-        elif p_ctx.dim() == 4:
-            # 2D Spatial: [B, D, H, W]
-            p_fft = torch.fft.rfft2(p_ctx, dim=(2, 3)).abs() # [B, D, H, W//2+1]
-            e_fft = torch.fft.rfft2(e_ctx, dim=(2, 3)).abs()
-            
-            p_fft = p_fft.mean(dim=(0, 1)) # [H, W//2+1]
-            e_fft = e_fft.mean(dim=(0, 1))
-            
-            mid_h, mid_w = max(1, p_fft.shape[0] // 2), max(1, p_fft.shape[1] // 2)
-            p_low = p_fft[:mid_h, :mid_w].mean().item()
-            p_high = p_fft[mid_h:, mid_w:].mean().item()
-            e_low = e_fft[:mid_h, :mid_w].mean().item()
-            e_high = e_fft[mid_h:, mid_w:].mean().item()
-        else:
-            return
-
-        p_hf_ratio = p_high / (p_low + 1e-8)
-        e_hf_ratio = e_high / (e_low + 1e-8)
-        divorce_index = e_hf_ratio / (p_hf_ratio + 1e-8)
-
-        pl_module.log("spectral/planner_hf_ratio", p_hf_ratio, sync_dist=True)
-        pl_module.log("spectral/expert_hf_ratio",  e_hf_ratio, sync_dist=True)
-        pl_module.log("spectral/hf_divorce_index", divorce_index, sync_dist=True)
-
-        logger.info(
-            f"[Spectral-Audit] Epoch {trainer.current_epoch}: "
-            f"Planner HF={p_hf_ratio:.4f}, Expert HF={e_hf_ratio:.4f} "
-            f"(Divorce Index: {divorce_index:.2f}x)"
-        )
-
-        # Warn if expert is NOT capturing more high-frequency than planner
-        if divorce_index < 1.0:
-            logger.warning(
-                f"[Spectral-Audit] DEGRADATION: Expert HF ratio ({e_hf_ratio:.3f}) "
-                f"<= Planner HF ratio ({p_hf_ratio:.3f}). "
-                f"ALB spectral separation not achieved. Check expert branch init."
-            )
-
 
 class GradientHealthCallback(pl.Callback):
     """
@@ -128,8 +27,8 @@ class GradientHealthCallback(pl.Callback):
         1. Backbone total gradient L2 norm (absolute signal strength)
         2. Per-group update-to-weight ratio (‖grad‖/‖param‖)
            Healthy range: ~0.001. <1e-4 = vanishing, >0.1 = exploding.
-        3. Gradient spike detection (EMA-based): warns when current norm
-           exceeds 5× the running EMA. This catches instability before NaN.
+        3. Gradient spike detection (running-average-based): warns when current norm
+           exceeds 5× the running average. This catches instability before NaN.
 
     Runs every `check_interval` optimizer steps. Zero overhead in between.
 
@@ -142,12 +41,12 @@ class GradientHealthCallback(pl.Callback):
         """
         Args:
             check_interval: Log every N optimizer steps.
-            spike_threshold: Log a warning when norm > spike_threshold × EMA.
+            spike_threshold: Log a warning when norm > spike_threshold × running average.
         """
         super().__init__()
         self.check_interval  = check_interval
         self.spike_threshold = spike_threshold
-        self._grad_norm_ema: float = -1.0  # Uninitialized
+        self._grad_norm_avg: float = -1.0  # Uninitialized
         self._warned_this_epoch = set()   # Track conditions to prevent terminal spam
 
     def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
@@ -225,18 +124,18 @@ class GradientHealthCallback(pl.Callback):
                     )
                     self._warned_this_epoch.add("exploding")
 
-        # ── 3. Spike detection (EMA-based) ──────────────────────────
-        if self._grad_norm_ema < 0:
-            self._grad_norm_ema = total_grad_norm
+        # ── 3. Spike detection (running-average-based) ──────────────────────────
+        if self._grad_norm_avg < 0:
+            self._grad_norm_avg = total_grad_norm
         else:
-            self._grad_norm_ema = 0.99 * self._grad_norm_ema + 0.01 * total_grad_norm
+            self._grad_norm_avg = 0.99 * self._grad_norm_avg + 0.01 * total_grad_norm
 
-        spike_ratio = total_grad_norm / (self._grad_norm_ema + 1e-8)
+        spike_ratio = total_grad_norm / (self._grad_norm_avg + 1e-8)
         if spike_ratio > self.spike_threshold:
             if "spike" not in self._warned_this_epoch:
                 pl_module.print(
                     f"[GradSpike] Step {trainer.global_step}: grad_norm={total_grad_norm:.4f} "
-                    f"is {spike_ratio:.1f}x EMA. Watch for instability. (Silencing per-step)"
+                    f"is {spike_ratio:.1f}x running_avg. Watch for instability. (Silencing per-step)"
                 )
                 self._warned_this_epoch.add("spike")
             pl_module.log("health/grad_spike_ratio", spike_ratio, sync_dist=False)

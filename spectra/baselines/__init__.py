@@ -15,7 +15,6 @@ WEIGHTER_REGISTRY = {
     "pcgrad": PCGradWeighter,
     "gradnorm_proxy": GradNormProxyWeighter,
     "bpgs": None,
-    "bpgs_alb": None,
 }
 
 
@@ -23,14 +22,17 @@ def build_weighter(cfg):
     """Factory: build a weighter from config."""
     name = cfg.get("method_name") or cfg.get("method", {}).get("name")
 
-    if name in ("bpgs", "bpgs_alb"):
+    if name == "bpgs":
         from spectra.core.bpgs import BPGS
 
         m_cfg = cfg.get("method", {})
         return BPGS(
             num_tasks=len(cfg.tasks),
-            temperature=m_cfg.get("temperature", None),  # None = adaptive CV-based
-            auto_calibrate=m_cfg.get("auto_calibrate", True),
+            s_min=m_cfg.get("s_min", -10.0),
+            s_max=m_cfg.get("s_max", 10.0),
+            s_init=m_cfg.get("s_init", 0.0),
+            s_mode=m_cfg.get("s_mode", "batch_aware"),
+            init_mode=m_cfg.get("init_mode", "auto_calibrate"),
             theta_grad_scale=m_cfg.get("theta_grad_scale", 100.0),
         )
 

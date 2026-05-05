@@ -1,6 +1,0 @@
-# ─── NTKMTL (Qin et al. 2025) ────────────────────────────────
-name: ntkmtl
-use_alb: false
-params:
-  update_interval: 100
-  ema_decay: 0.9

@@ -1,0 +1,24 @@
+# @package _global_
+defaults:
+  - override /family: heterogeneous
+  - override /methods: imbalance
+  - _self_
+
+experiment:
+  name: exp_08_heterogeneous_regime
+  description: Hard heterogeneous mixed-task regime with diverse losses and metrics.
+  generator:
+    n_samples: 2048
+    input_dim: 32
+    shared_dim: 24
+    task_count: 8
+    correlation: 0.35
+    imbalance_ratio: 1.0
+    label_noise: 0.08
+    task_type_mix: mixed
+    train_fraction: 0.8
+    seed: 42
+    batch_size: 64
+    regression_bias_scale: 0.25
+    classification_temperature: 0.9
+    multiclass_num_classes: 10

@@ -1,25 +1,19 @@
 """
 spectra/core/bpgs.py
 --------------------
-Version 3: Stateless B-PGS with pure theta-based parameterization.
+B-PGS weighting with uncertainty geometry.
 
-This version removes all batch-stat dependence from the uncertainty manifold:
-  - s depends only on theta (no mu/sigma from batch)
-  - learnable global temperature (tau) instead of CV-based
-  - fixed initialization (s_init) instead of auto-calibration
-  - no cached state (no last_mu/last_sigma)
-  - classical detached weights for network flow
-  - classical uncertainty objective
+Canonical configuration (validated by ablation on NYUv2, 4-epoch sweep):
+  - s_mode = batch_aware      (s = mu + z*sigma, z from theta)
+  - init_mode = auto_calibrate (one-shot first-batch theta calibration)
 
-Active method definition:
-  s_i = s_min + (s_max - s_min) * sigmoid(theta_i)
-  omega_i = exp(-s_i)
-  J_net = sum_i stopgrad(omega_i) * L_i
-  J_unc = sum_i [0.5 * omega_i * detach(L_i) + 0.5 * s_i]
+This combination yields:
+  angle=39.40, abs_rel=0.314, mIoU=0.0831, vL=2.970
+vs. the naive baseline (stateless + fixed):
+  angle=43.60, abs_rel=0.320, mIoU=0.0776, vL=3.080
 
-Optional learnable temperature:
-  T = softplus(tau) + 0.1
-  Applied only to network-side normalization (not to uncertainty manifold).
+Ablation overrides (s_mode=stateless, init_mode=fixed) are kept for
+reproducibility but are not recommended for production use.
 """
 
 import math
@@ -27,7 +21,6 @@ from typing import Dict, List, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class GradScale(torch.autograd.Function):
@@ -43,13 +36,20 @@ class GradScale(torch.autograd.Function):
 
 class BPGS(nn.Module):
     """
-    Canonical B-PGS weighting module.
+    B-PGS weighting module with uncertainty geometry.
 
-    Active method definition:
-      s_i = a_i + (b_i - a_i) * sigmoid(theta_i)
+    Shared objective:
       omega_i = exp(-s_i)
-      J_net = sum_i 0.5 * stopgrad(omega_i) * L_i
+      J_net = sum_i stopgrad(omega_i) * L_i
       J_unc = sum_i [0.5 * omega_i * detach(L_i) + 0.5 * s_i]
+
+    Canonical configuration (validated by ablation on NYUv2):
+      - s_mode = `batch_aware` : s depends on theta plus current batch log-loss stats
+      - init_mode = `auto_calibrate` : one-shot first-batch calibration
+
+    Ablation overrides (for study only, not recommended):
+      - s_mode = `stateless`   : s depends only on theta
+      - init_mode = `fixed`    : initialize theta from s_init
     """
 
     def __init__(
@@ -59,7 +59,8 @@ class BPGS(nn.Module):
         s_max: float = 10.0,
         s_init: float = 0.0,
         eps_clip: float = 1e-8,
-        learnable_temperature: bool = False,
+        s_mode: str = "batch_aware",
+        init_mode: str = "auto_calibrate",
         theta_grad_scale: float = 100.0,
         **kwargs,
     ) -> None:
@@ -68,88 +69,143 @@ class BPGS(nn.Module):
             raise ValueError(f"num_tasks must be positive; got {num_tasks}.")
         if s_min >= s_max:
             raise ValueError(f"s_min must be strictly less than s_max; got {s_min} >= {s_max}.")
+        if eps_clip <= 0:
+            raise ValueError(f"eps_clip must be positive; got {eps_clip}.")
+        if theta_grad_scale <= 0:
+            raise ValueError(f"theta_grad_scale must be positive; got {theta_grad_scale}.")
 
         self.num_tasks = num_tasks
         self.s_min = float(s_min)
         self.s_max = float(s_max)
+        self.s_init = float(s_init)
         self.eps_clip = float(eps_clip)
         self.theta_grad_scale = float(theta_grad_scale)
+        self.s_mode = str(s_mode)
+        self.init_mode = str(init_mode)
 
-        # Fixed bounds for pure theta-based parameterization
+        valid_s_modes = {"stateless", "batch_aware"}
+        valid_init_modes = {"fixed", "auto_calibrate"}
+        if self.s_mode not in valid_s_modes:
+            raise ValueError(f"Unknown s_mode={self.s_mode!r}. Expected one of {sorted(valid_s_modes)}.")
+        if self.init_mode not in valid_init_modes:
+            raise ValueError(
+                f"Unknown init_mode={self.init_mode!r}. Expected one of {sorted(valid_init_modes)}."
+            )
+        if not (self.s_min <= self.s_init <= self.s_max):
+            raise ValueError(
+                f"s_init must lie in [s_min, s_max]; got s_init={self.s_init}, "
+                f"bounds=({self.s_min}, {self.s_max})."
+            )
+
         self.register_buffer("s_min_v", torch.full((num_tasks,), s_min))
         self.register_buffer("s_max_v", torch.full((num_tasks,), s_max))
 
-        # Initialize theta so s starts at s_init
-        p = (s_init - s_min) / (s_max - s_min)
-        p = max(1e-4, min(1.0 - 1e-4, p))
-        theta_init = math.log(p / (1.0 - p))
+        # State used only by the batch-aware path and telemetry when raw losses are unavailable.
+        self.topological_limit = math.sqrt(num_tasks - 1) + 0.1
+        self.register_buffer("last_mu", torch.zeros(1))
+        self.register_buffer("last_sigma", torch.ones(1))
+
+        theta_init = self._theta_from_s(self.s_init)
         self.theta = nn.Parameter(torch.full((num_tasks,), theta_init))
+        self._calibrated = False
 
-        # Learnable global temperature (optional)
-        self.learnable_temperature = bool(learnable_temperature)
-        if learnable_temperature:
-            self.tau = nn.Parameter(torch.tensor(0.0))  # T = softplus(tau) + 0.1
-        else:
-            self.register_buffer("tau", torch.tensor(0.0))
+    def _theta_from_s(self, s_value: float) -> float:
+        p = (s_value - self.s_min) / (self.s_max - self.s_min)
+        p = max(1e-4, min(1.0 - 1e-4, p))
+        return math.log(p / (1.0 - p))
 
+    def _theta_scaled(self) -> torch.Tensor:
+        return GradScale.apply(self.theta, self.theta_grad_scale)
 
+    def _bounded_stateless_s(self) -> torch.Tensor:
+        return self.s_min_v + (self.s_max_v - self.s_min_v) * torch.sigmoid(self._theta_scaled())
+
+    def _extract_detached_losses(self, raw_losses: List[torch.Tensor] | torch.Tensor) -> torch.Tensor:
+        if isinstance(raw_losses, torch.Tensor):
+            return raw_losses.detach()
+        return torch.stack([loss.detach() for loss in raw_losses])
+
+    def _update_batch_stats(self, raw_losses: List[torch.Tensor] | torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        losses = self._extract_detached_losses(raw_losses)
+        log_losses = torch.log(losses.clamp(min=self.eps_clip))
+        mu = log_losses.mean()
+        sigma = log_losses.std(unbiased=False).clamp(min=1e-4)
+        self.last_mu[0] = mu
+        self.last_sigma[0] = sigma
+        return mu, sigma
+
+    def auto_calibrate(self, raw_losses: List[torch.Tensor] | torch.Tensor) -> None:
+        """
+        One-shot legacy-style initialization from the first observed loss batch.
+        """
+        with torch.no_grad():
+            mu, sigma = self._update_batch_stats(raw_losses)
+            losses = self._extract_detached_losses(raw_losses)
+            log_losses = torch.log(losses.clamp(min=self.eps_clip))
+
+            for i in range(self.num_tasks):
+                z_target = (log_losses[i] - mu) / sigma
+                z_bounded = torch.clamp(z_target, -self.topological_limit, self.topological_limit)
+                sig_val = (z_bounded + self.topological_limit) / (2.0 * self.topological_limit)
+                sig_val = torch.clamp(sig_val, 1e-4, 1.0 - 1e-4)
+                self.theta.data[i] = -torch.log(1.0 / sig_val - 1.0)
 
     def get_s(self, raw_losses=None) -> torch.Tensor:
         """
-        Project theta to bounded log-variance manifold (pure parameterization).
-        
-        Note: raw_losses parameter is ignored (kept for backward compatibility).
+        Construct current log-variances according to `s_mode`.
         """
-        theta_scaled = GradScale.apply(self.theta, self.theta_grad_scale)
-        return self.s_min_v + (self.s_max_v - self.s_min_v) * torch.sigmoid(theta_scaled)
+        if self.s_mode == "stateless":
+            return self._bounded_stateless_s()
 
+        theta_scaled = self._theta_scaled()
+        z = self.topological_limit * (2.0 * torch.sigmoid(theta_scaled) - 1.0)
+
+        if raw_losses is not None:
+            mu, sigma = self._update_batch_stats(raw_losses)
+        else:
+            mu = self.last_mu[0]
+            sigma = self.last_sigma[0]
+
+        return mu + z * sigma
+
+    def _maybe_auto_calibrate(self, raw_losses: List[torch.Tensor]) -> None:
+        if self.init_mode == "auto_calibrate" and not self._calibrated:
+            self.auto_calibrate(raw_losses)
+            self._calibrated = True
 
     def network_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
-        """Network objective with classical detached precision weights."""
-        s = self.get_s()
-        precision = torch.exp(-s).detach()
-
-        # Optional: normalize to sum to 1 for competition
-        if self.learnable_temperature:
-            T = F.softplus(self.tau) + 0.1
-            weights = torch.softmax(precision / T, dim=0)  # no detach: allow tau to learn
-        else:
-            weights = precision
+        """
+        Fixed raw detached precision weighting for network parameters.
+        """
+        self._maybe_auto_calibrate(raw_losses)
+        s = self.get_s(raw_losses if self.s_mode == "batch_aware" else None)
+        weights = torch.exp(-s).detach()
 
         total_loss = 0
         for i, loss in enumerate(raw_losses):
             total_loss = total_loss + weights[i] * loss
         return total_loss
 
-
-
     def uncertainty_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
-        """Classical uncertainty objective for the bounded split-update BPGS path."""
-        s = self.get_s()
+        """
+        Classical uncertainty objective.
+        """
+        self._maybe_auto_calibrate(raw_losses)
+        s = self.get_s(raw_losses if self.s_mode == "batch_aware" else None)
         precision = torch.exp(-s)
 
         total_loss = 0
         for i, loss in enumerate(raw_losses):
             total_loss = total_loss + 0.5 * precision[i] * loss.detach() + 0.5 * s[i]
-
         return total_loss
-
 
     def forward(self, losses: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         Compatibility interface for validation/logging.
-        The active optimization path uses `network_loss` and `uncertainty_loss`.
         """
         with torch.no_grad():
-            s = self.get_s()
-            precision = torch.exp(-s)
-
-            if self.learnable_temperature:
-                T = F.softplus(self.tau) + 0.1
-                weights = torch.softmax(precision / T, dim=0)
-            else:
-                weights = precision
-
+            s = self.get_s(losses if self.s_mode == "batch_aware" else None)
+            weights = torch.exp(-s)
             total = (weights * losses).sum()
 
         metrics: Dict[str, torch.Tensor] = {
@@ -164,22 +220,21 @@ class BPGS(nn.Module):
         return total, metrics
 
     def get_task_stats(self) -> Dict[str, float]:
-        """Return current uncertainty statistics for logging."""
+        """
+        Return current uncertainty statistics for logging.
+        """
         with torch.no_grad():
             s = self.get_s()
-            precision = torch.exp(-s)
+            weights = torch.exp(-s)
 
-            if self.learnable_temperature:
-                T = F.softplus(self.tau) + 0.1
-                weights = torch.softmax(precision / T, dim=0)
-            else:
-                weights = precision
-
-        stats: Dict[str, float] = {}
+        stats: Dict[str, float] = {
+            "bpgs/s_mode_batch_aware": 1.0 if self.s_mode == "batch_aware" else 0.0,
+            "bpgs/init_mode_auto_calibrate": 1.0 if self.init_mode == "auto_calibrate" else 0.0,
+        }
         for i in range(self.num_tasks):
             stats[f"bpgs/log_var_{i}"] = s[i].item()
             stats[f"bpgs/weight_{i}"] = weights[i].item()
             stats[f"bpgs/theta_{i}"] = self.theta[i].item()
-        if self.learnable_temperature:
-            stats["bpgs/temperature"] = T.item()
+        stats["bpgs/batch_mu"] = self.last_mu[0].item()
+        stats["bpgs/batch_sigma"] = self.last_sigma[0].item()
         return stats

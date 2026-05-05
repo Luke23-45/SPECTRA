@@ -1,6 +1,5 @@
 # @package _global_
 method_name: uwso
-use_alb: false
 
 method:
   name: uwso
@@ -9,4 +8,3 @@ method:
 
 train:
   grad_clip: 1.0
-  precision: 32

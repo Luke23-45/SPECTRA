@@ -1,11 +1,13 @@
 # @package _global_
 method_name: bpgs
-use_alb: false
 
 method:
   name: bpgs
-  temperature: 6.0
-  auto_calibrate: true
+  s_min: -10.0
+  s_max: 10.0
+  s_init: 0.0
+  s_mode: batch_aware
+  init_mode: auto_calibrate
   theta_grad_scale: 100.0
   kappa: 0.1
 
@@ -15,4 +17,3 @@ module:
 
 train:
   grad_clip: 1.0
-  precision: 32

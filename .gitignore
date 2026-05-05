@@ -153,7 +153,7 @@ cython_debug/
 #  JetBrains IDEs: .idea/ (whole folder)
 .idea/
 idea/
-datasets/
+#datasets/
 # VS Code
 .vscode/
 ledger_tracker.md
@@ -165,6 +165,8 @@ xdev
 tests
 logs.md
 aaa.md
-scripts/benchmarks
-spectra/empirical
-configs/empirical
+datasets
+working
+# scripts/benchmarks
+# spectra/empirical
+# configs/empirical

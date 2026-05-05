@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+from studies.bpgs_study.common.paths import OUTPUT_ROOT, PROJECT_ROOT
+from studies.bpgs_study.common.runtime import Stage
+from studies.bpgs_study.common.specs import EmpiricalVariant, OverrideSpec
+
+
+def _resolve_output_dir(study_name: str, variant: EmpiricalVariant, method: str, seed: int) -> Path:
+    return OUTPUT_ROOT / study_name / variant.label / method / f"seed_{seed}"
+
+
+def build_empirical_stage(
+    study_name: str,
+    variant: EmpiricalVariant,
+    method: str,
+    seed: int,
+    overrides: tuple[OverrideSpec, ...],
+) -> Stage:
+    """Build a Hydra empirical experiment command for a single variant-method-seed triple.
+
+    The stress runner owns this logic entirely.  Overrides are
+    method-scoped: only overrides whose ``scope_method`` matches
+    ``method`` (or have no scope) are applied.
+    """
+    from studies.bpgs_study.common.runtime import filter_overrides_for_method
+
+    applicable = filter_overrides_for_method(overrides, method)
+
+    cmd = [sys.executable, "-m", "scripts.run_empirical_experiment"]
+    cmd.append(f"experiment={variant.experiment}")
+    cmd.append(f"experiment.family={variant.family}")
+    cmd.append(f"method={method}")
+    cmd.append(f"seed={seed}")
+
+    for override in variant.overrides:
+        cmd.append(str(override))
+
+    for override in applicable:
+        cmd.append(override.to_hydra_arg())
+
+    output_dir = _resolve_output_dir(study_name, variant, method, seed)
+    cmd.append(f"hydra.run.dir={output_dir}")
+
+    return Stage(
+        label=f"{study_name} :: {variant.label} :: {method} :: seed={seed}",
+        command=cmd,
+        cwd=PROJECT_ROOT,
+    )

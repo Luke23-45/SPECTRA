@@ -4,8 +4,8 @@ spectra/engine/scalers.py
 State-of-the-Art (SOTA) Dynamic Target Standardization.
 
 Resolves the Adam Scale-Invariance Trap mathematically in Multi-Task Learning.
-Tracks target distributions (mean, variance) online using Exponential Moving 
-Average (EMA), ensuring gradients are perfectly scaled regardless of extreme
+Tracks target distributions (mean, variance) online using running
+average, ensuring gradients are perfectly scaled regardless of extreme
 target offsets (e.g., millions vs decimals).
 """
 
@@ -25,12 +25,12 @@ class OnlineTargetScaler(nn.Module):
         Inverse scales output predictions to absolute task domain values, 
         ensuring comparative metrics remain identically scaled.
 
-    Uses ema_momentum (default 0.1) for running statistics.
+    Uses momentum (default 0.1) for running statistics.
     Buffer persistence ensures these stats safely serialize in checkpoints.
     """
-    def __init__(self, ema_momentum: float = 0.1, eps: float = 1e-6):
+    def __init__(self, momentum: float = 0.1, eps: float = 1e-6):
         super().__init__()
-        self.ema_momentum = ema_momentum
+        self.momentum = momentum
         self.eps = eps
         
         # Persistent state for checkpoints
@@ -41,14 +41,14 @@ class OnlineTargetScaler(nn.Module):
 
     @torch.no_grad()
     def update(self, targets: torch.Tensor):
-        """Update EMA statistics dynamically given a batch of targets."""
+        """Update running statistics dynamically given a batch of targets."""
         batch_mean = targets.mean()
         batch_var = targets.var(unbiased=False) if targets.numel() > 1 else torch.zeros_like(batch_mean)
 
         # [SOTA Fix] Removed synchronous DDP all_reduce.
         # Calling all_reduce sequentially 14 times per batch completely locks the GPU.
         # In DDP, batches are IID (Independent & Identically Distributed) across GPUs,
-        # so local EMA updates are perfectly unbiased and mathematically sufficient.
+        # so local running-average updates are perfectly unbiased and mathematically sufficient.
 
         if not self.initialized.item():
             self.running_mean.copy_(batch_mean)
@@ -56,8 +56,8 @@ class OnlineTargetScaler(nn.Module):
             self.initialized.fill_(True)
         else:
             # [SOTA Fix] Use in-place copy_ instead of reassignment to preserve buffer persistence
-            new_mean = (1 - self.ema_momentum) * self.running_mean + self.ema_momentum * batch_mean
-            new_var = (1 - self.ema_momentum) * self.running_var + self.ema_momentum * batch_var
+            new_mean = (1 - self.momentum) * self.running_mean + self.momentum * batch_mean
+            new_var = (1 - self.momentum) * self.running_var + self.momentum * batch_var
             self.running_mean.copy_(new_mean)
             self.running_var.copy_(new_var)
 

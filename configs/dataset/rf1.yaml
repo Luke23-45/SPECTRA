@@ -10,8 +10,8 @@ subset_seed: 42
 normalize_inputs: true
 input_dim: 64
 num_targets: 8
-train_size: 0
-val_size: 0
+train_size: 4108
+val_size: 5017
 
 dataset:
   name: rf1

@@ -5,23 +5,23 @@ The Core Execution Runner.
 Composes the pieces (Module, DataModule, Callbacks, Hydra) and executes.
 """
 
-import os
 import torch
 import logging
 from pathlib import Path
 from omegaconf import DictConfig, OmegaConf
 import pytorch_lightning as pl
 from datetime import datetime
-from pytorch_lightning.loggers import WandbLogger, CSVLogger
+from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.callbacks import LearningRateMonitor
 from hydra.utils import instantiate
 
 from spectra.data.datamodule import SPECTRADataModule
-from spectra.engine.callbacks import SpectralMonitoringCallback, GradientHealthCallback
+from spectra.engine.callbacks import GradientHealthCallback
 
 from spectra.utils.callbacks import build_checkpoints, build_early_stopping
 from spectra.utils.progress import SOTAProgressBar
 from spectra.utils.config import _merge_dataset_defaults
+from spectra.utils.wandb import WandbSession, WandbSettings
 from spectra.train.artifacts import (
     resolve_artifact_dir,
     resolve_resume_checkpoint,
@@ -72,7 +72,7 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     # B-PGS requires a specialized decoupled engine. Due to Hydra v1.1+ namespace
     # merging limitations, we inject it directly at the execution rim.
     method_name = cfg.get("method_name") or cfg.get("method", {}).get("name")
-    if method_name in ("bpgs", "bpgs_alb"):
+    if method_name == "bpgs":
         from spectra.engine.optimizers.bpgs import BPGSEngine
         engine = BPGSEngine()
     else:
@@ -83,7 +83,6 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     # 6. Callback Infrastructure
     callbacks = [
         *build_checkpoints(cfg, artifact_dir),
-        SpectralMonitoringCallback(log_every_n_epochs=5),
         GradientHealthCallback(check_interval=50),
         LearningRateMonitor(logging_interval="step"),
         SOTAProgressBar(refresh_rate=1),
@@ -110,26 +109,25 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     loggers.append(csv_logger)
     logger.info(f"[Logging] CSV Logger initialized in stable artifact dir: {artifact_dir}/csv_logs/{run_id}")
 
-    # 7.2 WandB Integration (Optional)
-    if cfg.get("logging", {}).get("use_wandb", False):
-        if cfg.logging.get("wandb_mode") == "offline":
-            os.environ["WANDB_MODE"] = "offline"
-            logger.info("[Logging] WandB Offline Mode Engaged (Silent Research)")
-
-        wandb_logger = WandbLogger(
-            project=cfg.logging.get("wandb_project", "spectra-mtl"),
-            name=cfg.get("run_name", "unnamed_run"),
-            save_dir=str(artifact_dir),
-            offline=(cfg.logging.get("wandb_mode") == "offline"),
-            log_model=False,
-            id=run_id,
-            resume="allow",
-        )
-        if wandb_logger.experiment is not None:
-            wandb_logger.experiment.config.update(
-                OmegaConf.to_container(cfg, resolve=True), allow_val_change=True
-            )
+    wandb_session = WandbSession(
+        WandbSettings.from_logging_config(cfg.get("logging", {})),
+        artifact_dir,
+        run_id,
+        name=str(cfg.get("run_name", "unnamed_run")),
+        group=f"{dataset_name}-{method_name}",
+        job_type="training",
+        tags=(dataset_name, method_name),
+        config_payload=OmegaConf.to_container(cfg, resolve=True),
+        summary_payload={
+            "artifact_dir": str(artifact_dir),
+            "dataset_name": dataset_name,
+            "method_name": method_name,
+        },
+    )
+    wandb_logger = wandb_session.create_lightning_logger()
+    if wandb_logger is not None:
         loggers.append(wandb_logger)
+        logger.info(f"[Logging] WandB logger initialized in stable artifact dir: {wandb_session.local_dir}")
 
     # 8. Trainer Configuration
     if torch.cuda.is_available() and not cfg.train.get("deterministic", False):
@@ -174,33 +172,34 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     )
     
     fit_started_at = datetime.utcnow()
-    trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
-    fit_ended_at = datetime.utcnow()
+    try:
+        trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
+        fit_ended_at = datetime.utcnow()
 
-    checkpoint_registry = {}
-    for callback in callbacks:
-        if hasattr(callback, "monitor") and hasattr(callback, "best_model_path"):
-            checkpoint_registry[str(callback.monitor)] = {
-                "mode": getattr(callback, "mode", None),
-                "best_model_path": getattr(callback, "best_model_path", None) or None,
-                "best_model_score": (
-                    float(callback.best_model_score.item())
-                    if getattr(callback, "best_model_score", None) is not None
-                    else None
-                ),
-            }
+        checkpoint_registry = {}
+        for callback in callbacks:
+            if hasattr(callback, "monitor") and hasattr(callback, "best_model_path"):
+                checkpoint_registry[str(callback.monitor)] = {
+                    "mode": getattr(callback, "mode", None),
+                    "best_model_path": getattr(callback, "best_model_path", None) or None,
+                    "best_model_score": (
+                        float(callback.best_model_score.item())
+                        if getattr(callback, "best_model_score", None) is not None
+                        else None
+                    ),
+                }
 
-    run_summary_path = save_run_summary(
-        cfg,
-        artifact_dir,
-        {
+        summary_payload = {
             "fit_started_at": fit_started_at.isoformat() + "Z",
             "fit_ended_at": fit_ended_at.isoformat() + "Z",
             "elapsed_seconds": (fit_ended_at - fit_started_at).total_seconds(),
             "stopped_epoch": int(trainer.current_epoch),
             "global_step": int(trainer.global_step),
             "checkpoint_registry": checkpoint_registry,
-        },
-    )
-    logger.info(f"[Mission-Control] Run summary saved to: {run_summary_path}")
-    logger.info("[Mission-Control] Mission Accomplished. [SUCCESS]")
+        }
+        run_summary_path = save_run_summary(cfg, artifact_dir, summary_payload)
+        wandb_session.update_summary(summary_payload)
+        logger.info(f"[Mission-Control] Run summary saved to: {run_summary_path}")
+        logger.info("[Mission-Control] Mission Accomplished. [SUCCESS]")
+    finally:
+        wandb_session.finish()

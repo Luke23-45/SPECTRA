@@ -17,6 +17,8 @@ class UWSOWeighter(BaseWeighter):
 
     def __init__(self, num_tasks: int, temperature: float = 2.0, **kwargs):
         super().__init__(num_tasks)
+        if temperature <= 0:
+            raise ValueError(f"temperature must be positive; got {temperature}.")
         self.temperature = temperature
 
     def forward(

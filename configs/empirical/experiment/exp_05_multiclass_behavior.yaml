@@ -1,0 +1,24 @@
+# @package _global_
+defaults:
+  - override /family: correlation
+  - override /methods: multiclass
+  - _self_
+
+experiment:
+  name: exp_05_multiclass_behavior
+  description: Mixed regression and classification behavior with multiclass emphasis.
+  generator:
+    n_samples: 1024
+    input_dim: 20
+    shared_dim: 16
+    task_count: 5
+    correlation: 0.1
+    imbalance_ratio: 1.0
+    label_noise: 0.1
+    task_type_mix: mixed
+    train_fraction: 0.8
+    seed: 42
+    batch_size: 64
+    regression_bias_scale: 0.25
+    classification_temperature: 1.0
+    multiclass_num_classes: 4

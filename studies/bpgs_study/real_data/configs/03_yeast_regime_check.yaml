@@ -1,0 +1,30 @@
+name: 03_yeast_regime_check
+group: real_data
+kind: training
+description: Multi-seed real-data classification support study on Yeast.
+notes: Supporting evidence only; do not let this replace the synthetic robustness story.
+variants:
+  - label: static
+    dataset: yeast
+    method: static
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: uwso
+    dataset: yeast
+    method: uwso
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: bpgs
+    dataset: yeast
+    method: bpgs
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001

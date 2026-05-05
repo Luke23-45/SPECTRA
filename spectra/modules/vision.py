@@ -36,14 +36,11 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
         
         self.backbone = self.model.backbone
         self.heads = self.model.heads
-        self.alb = getattr(self.model, 'alb', None)
-        self.use_alb = self.alb is not None
-
         # 2. Weighter Initialization
         self.weighter = build_weighter(cfg)
         method_name = cfg.get("method_name") or cfg.get("method", {}).get("name")
         self.is_pcgrad = (method_name == "pcgrad")
-        self.is_bpgs = (method_name in ("bpgs", "bpgs_alb"))
+        self.is_bpgs = (method_name == "bpgs")
         batch_aug_mode = cfg.get("batch_augmentation", cfg.get("dataset", {}).get("batch_augmentation", "disabled"))
         if (cfg.get("dataset_name") or cfg.get("dataset", {}).get("name")) == "nyuv2" and batch_aug_mode != "disabled":
             self.batch_train_transform = NYUv2BatchTrainTransform(
@@ -136,12 +133,9 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
         if self.is_pcgrad or self.is_bpgs:
             total_loss = losses_tensor.sum()
         else:
-            shared_params = list(self.backbone.parameters())
-            if self.use_alb:
-                shared_params += list(self.alb.parameters())
             total_loss, w_metrics = self.weighter(
                 losses_tensor,
-                shared_params=shared_params,
+                shared_params=list(self.backbone.parameters()),
                 sync_ddp=self.trainer.world_size > 1 if getattr(self, "trainer", None) else False,
                 raw_losses=raw_losses_tensor,
             )

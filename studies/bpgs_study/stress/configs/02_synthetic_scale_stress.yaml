@@ -1,0 +1,34 @@
+name: 02_synthetic_scale_stress
+group: stress
+kind: empirical
+description: Controlled synthetic scale-mismatch benchmark using imbalance sweeps.
+notes: Extended stress benchmark that complements the pure loss-rescaling study.
+variants:
+  - label: x1
+    experiment: exp_03_imbalance_robustness
+    family: imbalance
+    methods: [bpgs, uwso, kendall]
+    seeds: [42, 43, 44]
+    overrides:
+      - experiment.generator.imbalance_ratio=1.0
+  - label: x10
+    experiment: exp_03_imbalance_robustness
+    family: imbalance
+    methods: [bpgs, uwso, kendall]
+    seeds: [42, 43, 44]
+    overrides:
+      - experiment.generator.imbalance_ratio=10.0
+  - label: x100
+    experiment: exp_03_imbalance_robustness
+    family: imbalance
+    methods: [bpgs, uwso, kendall]
+    seeds: [42, 43, 44]
+    overrides:
+      - experiment.generator.imbalance_ratio=100.0
+  - label: x1000
+    experiment: exp_03_imbalance_robustness
+    family: imbalance
+    methods: [bpgs, uwso, kendall]
+    seeds: [42, 43, 44]
+    overrides:
+      - experiment.generator.imbalance_ratio=1000.0

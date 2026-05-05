@@ -1,0 +1,3 @@
+root_dir: outputs
+timestamp: ${now:%Y%m%d_%H%M%S}
+run_dir: ${output.root_dir}/${experiment.name}/${output.timestamp}

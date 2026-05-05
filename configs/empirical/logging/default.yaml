@@ -1,0 +1,12 @@
+use_wandb: false
+wandb_project: spectra-mtl
+wandb_mode: offline
+
+wandb:
+  enabled: ${logging.use_wandb}
+  project: ${logging.wandb_project}
+  mode: ${logging.wandb_mode}
+  dir_name: wandb
+  log_artifacts: true
+  log_config: true
+  log_model: false

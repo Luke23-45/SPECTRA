@@ -1,0 +1,30 @@
+name: 08_rf1_regime_check
+group: real_data
+kind: training
+description: Multi-seed real-data regression support study on RF1.
+notes: Supporting evidence only; use this to show BPGS is viable outside synthetic settings.
+variants:
+  - label: static
+    dataset: rf1
+    method: static
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: uwso
+    dataset: rf1
+    method: uwso
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: bpgs
+    dataset: rf1
+    method: bpgs
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001

@@ -1,7 +1,6 @@
 # @package _global_
 # ─── PCGrad (Yu et al. 2020) ─────────────────────────────────
 method_name: pcgrad
-use_alb: false
 
 method:
   name: pcgrad

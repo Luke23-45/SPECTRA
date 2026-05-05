@@ -23,16 +23,17 @@ class StaticWeighter(BaseWeighter):
 
     Args:
         num_tasks: Number of tasks.
-        weights: Optional list of fixed weights. If None, uses 1/N for each task.
+        weights: Optional list of fixed weights. If None, uses 1.0 for each task.
     """
 
     def __init__(self, num_tasks: int, weights: Optional[List[float]] = None, **kwargs):
         super().__init__(num_tasks)
         if weights is not None:
-            assert len(weights) == num_tasks, f"Expected {num_tasks} weights, got {len(weights)}"
+            if len(weights) != num_tasks:
+                raise ValueError(f"Expected {num_tasks} weights, got {len(weights)}")
             self.register_buffer("weights", torch.tensor(weights, dtype=torch.float32))
         else:
-            self.register_buffer("weights", torch.ones(num_tasks, dtype=torch.float32) / num_tasks)
+            self.register_buffer("weights", torch.ones(num_tasks, dtype=torch.float32))
 
     def forward(
         self,

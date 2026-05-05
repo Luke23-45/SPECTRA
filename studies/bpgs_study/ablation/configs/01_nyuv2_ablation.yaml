@@ -1,0 +1,71 @@
+name: 01_nyuv2_ablation
+group: ablation
+kind: training
+description: NYUv2 subset ablation for the locked BPGS design versus nearby alternatives.
+requires_nyuv2_subsets: true
+notes: Use this study to justify why batch-aware plus auto-calibrate is the canonical BPGS configuration.
+variants:
+  - label: bpgs_canonical
+    dataset: nyuv2
+    method: bpgs
+    epochs: 60
+    seeds: [42, 43, 44]
+    subset_budget: "50"
+    subset_seed: 11
+    use_subset_file: true
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: bpgs_stateless_fixed
+    dataset: nyuv2
+    method: bpgs
+    epochs: 60
+    seeds: [42, 43, 44]
+    extra_overrides:
+      - method.s_mode=stateless
+      - method.init_mode=fixed
+    subset_budget: "50"
+    subset_seed: 11
+    use_subset_file: true
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: bpgs_stateless_auto
+    dataset: nyuv2
+    method: bpgs
+    epochs: 60
+    seeds: [42, 43, 44]
+    extra_overrides:
+      - method.s_mode=stateless
+      - method.init_mode=auto_calibrate
+    subset_budget: "50"
+    subset_seed: 11
+    use_subset_file: true
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: bpgs_batch_aware_fixed
+    dataset: nyuv2
+    method: bpgs
+    epochs: 60
+    seeds: [42, 43, 44]
+    extra_overrides:
+      - method.s_mode=batch_aware
+      - method.init_mode=fixed
+    subset_budget: "50"
+    subset_seed: 11
+    use_subset_file: true
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: kendall
+    dataset: nyuv2
+    method: kendall
+    epochs: 60
+    seeds: [42, 43, 44]
+    subset_budget: "50"
+    subset_seed: 11
+    use_subset_file: true
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001

@@ -3,13 +3,11 @@
 method_name: bpgs
 
 # ALB disabled for dense prediction (SegNet backbone)
-use_alb: false
 
 method:
   name: bpgs
   use_sigmoid: true
   use_autocal: true
-  ema_decay: 0.99
   # SOTA: Decoupled Theta Optimizer (validated by 7-schedule comparison)
   # θ needs 10x higher LR than network weights (1D convex landscape)
   # and a 30% cosine floor to maintain late-training tracking ability.

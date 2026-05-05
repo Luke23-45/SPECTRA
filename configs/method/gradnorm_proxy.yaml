@@ -1,13 +1,10 @@
 # @package _global_
 method_name: gradnorm_proxy
-use_alb: false
 
 method:
   name: gradnorm_proxy
   params:
     update_interval: 100
-    ema_decay: 0.0
 
 train:
   grad_clip: 1.0
-  precision: 32

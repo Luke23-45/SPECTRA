@@ -18,13 +18,13 @@ model:
 # ─── Training Hyperparameters ────────────────────────────────
 train:
   epochs: 80
-  batch_size: 2           # NYUv2 images are large (288×384) — GPU memory constraint
+  batch_size: 4           # AMP allows 2× batch size on T4 (15 GB VRAM)
   lr: 0.0005              # Dense prediction converges well at 5e-4
   min_lr: 0.000001
   warmup_steps: 100
   weight_decay: 0.0001
   grad_clip: 1.0
-  precision: 32
+  precision: 16-mixed    # ~2× speedup on GPU with minimal accuracy impact
   num_workers: 2
   log_every_n_steps: 10
 

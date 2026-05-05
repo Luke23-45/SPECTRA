@@ -1,0 +1,6 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+CONFIG_DIR = Path(__file__).resolve().parent / "configs"
+CONFIG_FILES = ("01_nyuv2_ablation.yaml",)

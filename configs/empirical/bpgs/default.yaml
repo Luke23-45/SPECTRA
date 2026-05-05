@@ -1,0 +1,13 @@
+architecture:
+  family: regime_gated
+  latent_dim: 24
+  hidden_dim: 48
+  num_heads: 4
+  interaction_type: attention
+  route_experts: 3
+  route_temperature: 0.7
+  uncertainty_temperature: 1.0
+  temporal_momentum: 0.85
+  entropy_floor: 0.0
+  log_var_min: -6.0
+  log_var_max: 6.0

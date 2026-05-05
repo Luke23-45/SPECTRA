@@ -1,6 +1,5 @@
 # @package _global_
 method_name: pcgrad
-use_alb: false
 
 method:
   name: pcgrad
@@ -11,7 +10,6 @@ module:
 
 train:
   grad_clip: 1.0
-  precision: 32
   save_ckpt: true
   checkpoint_every_minutes: 10
 

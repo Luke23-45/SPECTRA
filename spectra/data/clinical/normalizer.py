@@ -46,8 +46,7 @@ Upgrades (Ultimate v8.0 - Life-Critical):
 6.  **Sanity Checking**: Runtime validation that outputs are in valid range.
 7.  **Static Context Handling**: Separate normalization path for demographic features.
 8.  **Comprehensive Logging**: Detailed calibration and runtime status reporting.
-9.  **EMA Shadow Compatibility**: Buffers designed for seamless EMA sync.
-10. **Batch and Instance Modes**: Supports both global quantile and per-patient norm.
+9.  **Batch and Instance Modes**: Supports both global quantile and per-patient norm.
 
 References:
     - Singer et al. "Sepsis-3 Consensus Definitions" (JAMA 2016)

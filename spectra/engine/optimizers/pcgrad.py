@@ -37,10 +37,8 @@ class PCGradEngine(OptimizationEngine):
         scaler = getattr(module.trainer.precision_plugin, "scaler", None)
         raw_opt = opt.optimizer if hasattr(opt, "optimizer") else opt
         
-        # Resolve shared parameters (Backbone + ALB if present)
+        # Resolve shared parameters from the common backbone.
         shared_params = list(module.backbone.parameters())
-        if getattr(module, "use_alb", False) and hasattr(module, "alb"):
-            shared_params += list(module.alb.parameters())
             
         # The losses passed in are already weighted by `module.task_weights`
         weighted_task_loss_list = list(losses.values())

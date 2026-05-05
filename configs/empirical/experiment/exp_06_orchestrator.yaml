@@ -1,0 +1,31 @@
+# @package _global_
+defaults:
+  - override /family: correlation
+  - override /methods: paper_core
+  - _self_
+
+experiment:
+  name: exp_06_orchestrator
+  description: Orchestrated empirical sweep for the paper configuration.
+  generator:
+    n_samples: 1024
+    input_dim: 20
+    shared_dim: 16
+    task_count: 4
+    correlation: 0.0
+    imbalance_ratio: 1.0
+    label_noise: 0.0
+    task_type_mix: mixed
+    train_fraction: 0.8
+    seed: 42
+    batch_size: 64
+    regression_bias_scale: 0.25
+    classification_temperature: 1.0
+    multiclass_num_classes: 3
+  sweep:
+    enabled: true
+    parameters:
+      task_count: [4, 8]
+      correlation: [-0.5, 0.0, 0.5]
+      imbalance_ratio: [1.0, 10.0]
+      label_noise: [0.0, 0.2]

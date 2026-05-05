@@ -1,0 +1,23 @@
+defaults:
+  - runtime: default
+  - output: default
+  - logging: default
+  - analysis: default
+  - seeds: default
+  - methods: boundedness
+  - bpgs: default
+  - family: correlation
+  - experiment: exp_04_control_benign
+  - _self_
+
+project:
+  name: spectra-empirical
+  mode: synthetic
+
+hydra:
+  run:
+    dir: ${output.run_dir}
+  sweep:
+    dir: ${output.run_dir}
+    subdir: ${hydra.job.override_dirname}
+  output_subdir: null

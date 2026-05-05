@@ -27,6 +27,8 @@ class BaseWeighter(nn.Module, ABC):
 
     def __init__(self, num_tasks: int, **kwargs):
         super().__init__()
+        if num_tasks < 1:
+            raise ValueError(f"num_tasks must be positive; got {num_tasks}.")
         self.num_tasks = num_tasks
 
     @abstractmethod

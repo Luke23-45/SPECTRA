@@ -42,7 +42,7 @@ tasks:
 
 # ─── Training Hyperparameters (Axe v3.2 Clinical) ─────────────
 train:
-  save_ckpt: true
+  save_ckpt: false
   epochs: 100
   batch_size: 64         # Standard for clinical time-series
   lr: 0.00005              # Stable learning rate

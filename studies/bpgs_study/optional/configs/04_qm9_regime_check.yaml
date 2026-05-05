@@ -1,0 +1,30 @@
+name: 04_qm9_regime_check
+group: optional
+kind: training
+description: Optional multi-seed QM9 support study.
+notes: Useful only if the core paper evidence is already complete.
+variants:
+  - label: pcgrad
+    dataset: qm9
+    method: pcgrad
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: uwso
+    dataset: qm9
+    method: uwso
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: bpgs
+    dataset: qm9
+    method: bpgs
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001

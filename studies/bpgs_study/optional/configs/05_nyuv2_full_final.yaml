@@ -1,0 +1,38 @@
+name: 05_nyuv2_full_final
+group: optional
+kind: training
+description: Optional final full NYUv2 seeded comparison for the paper table.
+notes: High-cost validation study. Run only when NYUv2 is available and the core synthetic story is already locked.
+variants:
+  - label: static
+    dataset: nyuv2
+    method: static
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: kendall
+    dataset: nyuv2
+    method: kendall
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: uwso
+    dataset: nyuv2
+    method: uwso
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: bpgs
+    dataset: nyuv2
+    method: bpgs
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001

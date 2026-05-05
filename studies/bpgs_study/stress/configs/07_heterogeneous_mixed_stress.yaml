@@ -1,0 +1,30 @@
+name: 07_heterogeneous_mixed_stress
+group: stress
+kind: empirical
+description: Hard heterogeneous mixed-task regime with varied conflict and noise.
+notes: Broader robustness study showing whether BPGS stays competitive outside pure scale inflation.
+variants:
+  - label: clean
+    experiment: exp_08_heterogeneous_regime
+    family: heterogeneous
+    methods: [bpgs, uwso, kendall, pcgrad]
+    seeds: [42, 43, 44]
+    overrides:
+      - experiment.generator.correlation=0.45
+      - experiment.generator.label_noise=0.05
+  - label: noisy
+    experiment: exp_08_heterogeneous_regime
+    family: heterogeneous
+    methods: [bpgs, uwso, kendall, pcgrad]
+    seeds: [42, 43, 44]
+    overrides:
+      - experiment.generator.correlation=0.15
+      - experiment.generator.label_noise=0.14
+  - label: conflict
+    experiment: exp_08_heterogeneous_regime
+    family: heterogeneous
+    methods: [bpgs, uwso, kendall, pcgrad]
+    seeds: [42, 43, 44]
+    overrides:
+      - experiment.generator.correlation=-0.35
+      - experiment.generator.label_noise=0.10
