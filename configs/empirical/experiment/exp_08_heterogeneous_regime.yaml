@@ -1,7 +1,7 @@
 # @package _global_
 defaults:
   - override /family: heterogeneous
-  - override /methods: imbalance
+  - override /methods: stress_full
   - _self_
 
 experiment:

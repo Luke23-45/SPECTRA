@@ -4,11 +4,25 @@ from __future__ import annotations
 
 from typing import Dict
 
+import torch
 from omegaconf import DictConfig, OmegaConf
 
 from spectra.empirical.generators import SyntheticGeneratorConfig
 from spectra.empirical.runners.base_runner import RunnerConfig
 from spectra.empirical.runners.method_comparison import ComparisonConfig
+
+
+def resolve_empirical_device(device: str) -> str:
+    normalized = str(device).strip().lower()
+    if normalized == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if normalized == "cuda":
+        if not torch.cuda.is_available():
+            raise ValueError("runtime.device=cuda was requested, but CUDA is not available.")
+        return "cuda"
+    if normalized == "cpu":
+        return "cpu"
+    raise ValueError(f"Unsupported runtime.device={device!r}. Expected one of: auto, cpu, cuda.")
 
 
 def validate_empirical_config(cfg: DictConfig) -> None:
@@ -22,6 +36,7 @@ def validate_empirical_config(cfg: DictConfig) -> None:
         raise ValueError("methods.names must be non-empty.")
     if not cfg.seeds["values"]:
         raise ValueError("seeds.values must be non-empty.")
+    resolve_empirical_device(str(cfg.runtime.device))
 
 
 def build_generator_config(cfg: DictConfig) -> SyntheticGeneratorConfig:
@@ -47,7 +62,7 @@ def build_comparison_config(cfg: DictConfig, output_dir: str) -> ComparisonConfi
         hidden_dim=int(cfg.runtime.hidden_dim),
         learning_rate=float(cfg.runtime.learning_rate),
         weight_decay=float(cfg.runtime.weight_decay),
-        device=str(cfg.runtime.device),
+        device=resolve_empirical_device(str(cfg.runtime.device)),
         output_dir=output_dir,
         bpgs_architecture=bpgs_architecture,
         loss_scale_task=str(loss_scale_task) if loss_scale_task not in (None, "") else None,
@@ -73,7 +88,7 @@ def build_runner_config(cfg: DictConfig, method: str, seed: int, output_dir: str
         learning_rate=float(cfg.runtime.learning_rate),
         weight_decay=float(cfg.runtime.weight_decay),
         gradient_clip_norm=float(cfg.runtime.gradient_clip_norm),
-        device=str(cfg.runtime.device),
+        device=resolve_empirical_device(str(cfg.runtime.device)),
         output_dir=output_dir,
         bpgs_architecture=bpgs_architecture,
         loss_scale_task=str(loss_scale_task) if loss_scale_task not in (None, "") else None,

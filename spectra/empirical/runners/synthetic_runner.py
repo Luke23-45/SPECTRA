@@ -330,21 +330,17 @@ class SyntheticExperimentRunner(BaseRunner):
                     total_loss = loss_net.detach()
                     with torch.no_grad():
                         detached_s = weighter.get_s(loss_list).detach().cpu()
-                        # Temperature: check if weighter supports learnable temperature
-                        if getattr(weighter, 'learnable_temperature', False):
-                            current_temp = (torch.nn.functional.softplus(weighter.tau) + 0.1).cpu()
-                        else:
-                            current_temp = torch.tensor(1.0)  # no temperature scaling
-                        detached_weights = torch.softmax(torch.exp(-detached_s) / current_temp, dim=0)
+                        detached_weights = torch.exp(-detached_s)
+                        detached_theta = weighter.theta.detach().cpu()
                     last_task_weights = {
                         spec.name: float(value.item())
                         for spec, value in zip(task_specs, detached_weights)
                     }
                     last_latent_state = {f"s_{index}": float(value.item()) for index, value in enumerate(detached_s)}
-                    last_latent_state["temperature"] = float(current_temp.detach().cpu().item())
-                    last_latent_state["theta_span"] = float(
-                        (weighter.theta.detach().cpu().max() - weighter.theta.detach().cpu().min()).item()
-                    )
+                    last_latent_state.update({
+                        f"theta_{index}": float(value.item())
+                        for index, value in enumerate(detached_theta)
+                    })
                 else:
                     model_optimizer.zero_grad(set_to_none=True)
                     total_loss, metrics = weighter(losses_tensor)

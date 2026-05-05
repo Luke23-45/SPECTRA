@@ -1,13 +1,8 @@
 architecture:
-  family: regime_gated
-  latent_dim: 24
-  hidden_dim: 48
-  num_heads: 4
-  interaction_type: attention
-  route_experts: 3
-  route_temperature: 0.7
-  uncertainty_temperature: 1.0
-  temporal_momentum: 0.85
-  entropy_floor: 0.0
-  log_var_min: -6.0
-  log_var_max: 6.0
+  s_mode: batch_aware
+  init_mode: auto_calibrate
+  s_min: -6.0
+  s_max: 6.0
+  s_init: 0.0
+  eps_clip: 1.0e-8
+  theta_grad_scale: 100.0

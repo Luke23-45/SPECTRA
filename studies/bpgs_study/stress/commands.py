@@ -31,9 +31,10 @@ def build_empirical_stage(
 
     cmd = [sys.executable, "-m", "scripts.run_empirical_experiment"]
     cmd.append(f"experiment={variant.experiment}")
-    cmd.append(f"experiment.family={variant.family}")
-    cmd.append(f"method={method}")
-    cmd.append(f"seed={seed}")
+    cmd.append(f"family={variant.family}")
+    cmd.append(f"methods.names=[{method}]")
+    cmd.append(f"seeds.values=[{seed}]")
+    cmd.append("runtime.device=cuda")
 
     for override in variant.overrides:
         cmd.append(str(override))
@@ -42,6 +43,8 @@ def build_empirical_stage(
         cmd.append(override.to_hydra_arg())
 
     output_dir = _resolve_output_dir(study_name, variant, method, seed)
+    cmd.append(f"output.root_dir={OUTPUT_ROOT / study_name}")
+    cmd.append(f"output.run_dir={output_dir}")
     cmd.append(f"hydra.run.dir={output_dir}")
 
     return Stage(

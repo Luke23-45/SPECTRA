@@ -1,7 +1,7 @@
 # @package _global_
 defaults:
   - override /family: rescaling
-  - override /methods: imbalance
+  - override /methods: multiclass
   - _self_
 
 experiment:

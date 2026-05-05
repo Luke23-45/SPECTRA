@@ -4,4 +4,4 @@ hidden_dim: 64
 learning_rate: 0.003
 weight_decay: 0.0001
 gradient_clip_norm: 5.0
-device: cpu
+device: auto

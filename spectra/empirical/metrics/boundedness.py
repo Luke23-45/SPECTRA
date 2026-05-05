@@ -17,6 +17,7 @@ def compute_entropy(weights: Sequence[float]) -> float:
 def compute_boundedness_metrics(history: Sequence[Mapping[str, object]]) -> Dict[str, float]:
     weight_vectors = []
     latent_vectors = []
+    theta_vectors = []
     for epoch in history:
         weights = epoch.get("task_weights", {})
         if weights:
@@ -24,8 +25,12 @@ def compute_boundedness_metrics(history: Sequence[Mapping[str, object]]) -> Dict
             weight_vectors.append(ordered_weights)
         latent = epoch.get("latent_state", {})
         if latent:
-            ordered_latent = [float(value) for _, value in sorted(latent.items())]
-            latent_vectors.append(ordered_latent)
+            s_values = [float(value) for key, value in sorted(latent.items()) if str(key).startswith("s_")]
+            theta_values = [float(value) for key, value in sorted(latent.items()) if str(key).startswith("theta_")]
+            if s_values:
+                latent_vectors.append(s_values)
+            if theta_values:
+                theta_vectors.append(theta_values)
 
     metrics: Dict[str, float] = {}
     if weight_vectors:
@@ -39,5 +44,10 @@ def compute_boundedness_metrics(history: Sequence[Mapping[str, object]]) -> Dict
         metrics["latent_min"] = float(latent_np.min())
         metrics["latent_max"] = float(latent_np.max())
         metrics["latent_span"] = float(latent_np.max() - latent_np.min())
+    if theta_vectors:
+        theta_np = np.asarray(theta_vectors, dtype=np.float64)
+        metrics["theta_min"] = float(theta_np.min())
+        metrics["theta_max"] = float(theta_np.max())
+        metrics["theta_span"] = float(theta_np.max() - theta_np.min())
     return metrics
 

@@ -83,7 +83,7 @@ class EmpiricalRunContext:
         experiment_name = str(cfg.experiment.name)
         timestamp = str(cfg.output.timestamp)
         root_dir = _resolve_path(str(cfg.output.root_dir))
-        run_dir = root_dir / experiment_name / timestamp
+        run_dir = _resolve_path(str(cfg.output.run_dir))
         return cls(
             experiment_name=experiment_name,
             timestamp=timestamp,
