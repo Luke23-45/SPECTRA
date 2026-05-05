@@ -46,13 +46,13 @@ def build_training_stage(
     cmd.append(f"seed={seed}")
 
     if variant.early_stop:
-        cmd.append("early_stopping.enabled=true")
+        cmd.append("train.early_stop=true")
         if variant.early_stop_patience is not None:
-            cmd.append(f"early_stopping.patience={variant.early_stop_patience}")
+            cmd.append(f"train.early_stop_patience={variant.early_stop_patience}")
         if variant.early_stop_min_delta is not None:
-            cmd.append(f"early_stopping.min_delta={variant.early_stop_min_delta}")
+            cmd.append(f"train.early_stop_min_delta={variant.early_stop_min_delta}")
     else:
-        cmd.append("early_stopping.enabled=false")
+        cmd.append("train.early_stop=false")
 
     if variant.use_subset_file and variant.subset_budget and variant.subset_seed is not None:
         from studies.bpgs_study.common.paths import nyuv2_subset_path
