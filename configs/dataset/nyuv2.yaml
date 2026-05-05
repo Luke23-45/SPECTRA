@@ -10,6 +10,8 @@ batch_augmentation: "cuda"
 normalize_rgb: false
 subset_pct: 1.0
 subset_seed: 42
+train_subset_file: null
+train_subset_id: null
 num_classes: 13
 ignore_index: 255
 image_height: 288
@@ -28,6 +30,8 @@ dataset:
   normalize_rgb: ${normalize_rgb}
   subset_pct: ${subset_pct}
   subset_seed: ${subset_seed}
+  train_subset_file: ${train_subset_file}
+  train_subset_id: ${train_subset_id}
   num_classes: ${num_classes}
   ignore_index: ${ignore_index}
   image_height: ${image_height}

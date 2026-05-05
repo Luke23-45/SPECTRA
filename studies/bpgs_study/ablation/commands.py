@@ -57,7 +57,7 @@ def build_training_stage(
     if variant.use_subset_file and variant.subset_budget and variant.subset_seed is not None:
         from studies.bpgs_study.common.paths import nyuv2_subset_path
         subset_path = nyuv2_subset_path(variant.subset_budget, variant.subset_seed)
-        cmd.append(f"dataset.train_subset_file={subset_path}")
+        cmd.append(f"train_subset_file={subset_path}")
 
     for extra in variant.extra_overrides:
         cmd.append(str(extra))
