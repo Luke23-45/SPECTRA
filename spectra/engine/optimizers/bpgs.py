@@ -19,6 +19,10 @@ from spectra.engine.optimizers.base import OptimizationEngine
 class BPGSEngine(OptimizationEngine):
     """Execute canonical B-PGS split optimization."""
 
+    @staticmethod
+    def _unwrap_optimizer(optimizer: Any) -> Any:
+        return optimizer.optimizer if hasattr(optimizer, "optimizer") else optimizer
+
     def setup(self, module: pl.LightningModule) -> None:
         module.automatic_optimization = False
 
@@ -41,33 +45,51 @@ class BPGSEngine(OptimizationEngine):
 
         raw_losses = [losses[name] for name in module.task_names]
         grad_clip = getattr(module.cfg.train, "grad_clip", 0.0)
+        scaler = getattr(module.trainer.precision_plugin, "scaler", None)
+        raw_opt_net = self._unwrap_optimizer(opt_net)
+        raw_opt_unc = self._unwrap_optimizer(opt_unc) if opt_unc is not None else None
+        old_scale = scaler.get_scale() if scaler is not None else None
 
         # Step 1: network flow
         opt_net.zero_grad()
         loss_net = module.weighter.network_loss(raw_losses)
-        loss_net.backward()
+        module.manual_backward(loss_net)
+        if scaler is not None:
+            scaler.unscale_(raw_opt_net)
         if grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(
-                [p for group in opt_net.param_groups for p in group["params"]],
+                [p for group in raw_opt_net.param_groups for p in group["params"]],
                 max_norm=grad_clip,
             )
-        opt_net.step()
+        if scaler is not None:
+            scaler.step(raw_opt_net)
+        else:
+            raw_opt_net.step()
 
         # Step 2: uncertainty flow
         if opt_unc is not None:
             opt_unc.zero_grad()
             loss_unc = module.weighter.uncertainty_loss(raw_losses)
-            loss_unc.backward()
+            module.manual_backward(loss_unc)
+            if scaler is not None and raw_opt_unc is not None:
+                scaler.unscale_(raw_opt_unc)
             if grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(module.weighter.parameters(), max_norm=grad_clip)
-            opt_unc.step()
+            if scaler is not None and raw_opt_unc is not None:
+                scaler.step(raw_opt_unc)
+            else:
+                opt_unc.step()
+
+        if scaler is not None:
+            scaler.update()
+        should_step_schedulers = scaler is None or scaler.get_scale() >= old_scale
 
         # Step 3: schedulers
-        if sch_net is not None:
+        if sch_net is not None and should_step_schedulers:
             sch_net.step()
             if hasattr(sch_net, "get_last_lr"):
                 module.log("lr", sch_net.get_last_lr()[0], on_step=True, on_epoch=False, prog_bar=False)
-        if sch_unc is not None:
+        if sch_unc is not None and should_step_schedulers:
             sch_unc.step()
             if hasattr(sch_unc, "get_last_lr"):
                 module.log("lr_unc", sch_unc.get_last_lr()[0], on_step=True, on_epoch=False, prog_bar=False)
