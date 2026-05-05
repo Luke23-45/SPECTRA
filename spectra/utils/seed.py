@@ -33,9 +33,7 @@ def configure_reproducibility(deterministic: bool = True, warn_only: bool = Fals
             torch.backends.cuda.matmul.allow_tf32 = False
         if hasattr(torch.backends, "cudnn") and hasattr(torch.backends.cudnn, "allow_tf32"):
             torch.backends.cudnn.allow_tf32 = False
-        torch.use_deterministic_algorithms(True, warn_only=warn_only)
     else:
-        torch.use_deterministic_algorithms(False)
         torch.backends.cudnn.deterministic = False
 
 
