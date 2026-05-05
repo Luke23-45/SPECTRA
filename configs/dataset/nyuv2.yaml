@@ -93,6 +93,9 @@ train:
     update_interval_seconds: 15
   deterministic: false
   deterministic_warn_only: false
+  checkpoint_every_minutes: 0
+  selection_metric: val/total_loss
+  selection_mode: min
   early_stop: true
   early_stop_patience: 15
   early_stop_min_delta: 0.0001

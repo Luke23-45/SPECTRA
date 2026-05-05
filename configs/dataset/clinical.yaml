@@ -53,6 +53,9 @@ train:
   precision: 32
   log_every_n_steps: 10
 
+  checkpoint_every_minutes: 0
+  selection_metric: val/total_loss
+  selection_mode: min
   early_stop: true
   early_stop_patience: 3
   early_stop_min_delta: 0.001

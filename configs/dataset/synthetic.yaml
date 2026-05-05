@@ -67,6 +67,9 @@ train:
   precision: 32
   num_workers: auto
   log_every_n_steps: 50
+  checkpoint_every_minutes: 0
+  selection_metric: val/total_loss
+  selection_mode: min
   early_stop: true
   early_stop_patience: 20  # [FAIRNESS FIX] ALL methods get equal convergence runway.
   early_stop_min_delta: 0.0001
