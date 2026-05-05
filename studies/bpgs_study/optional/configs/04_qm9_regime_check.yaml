@@ -4,9 +4,9 @@ kind: training
 description: Optional multi-seed QM9 support study.
 notes: Useful only if the core paper evidence is already complete.
 variants:
-  - label: pcgrad
+  - label: static
     dataset: qm9
-    method: pcgrad
+    method: static
     epochs: 120
     seeds: [42, 43, 44]
     early_stop: true
@@ -23,6 +23,30 @@ variants:
   - label: bpgs
     dataset: qm9
     method: bpgs
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: gradnorm_proxy
+    dataset: qm9
+    method: gradnorm_proxy
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: kendall
+    dataset: qm9
+    method: kendall
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: pcgrad
+    dataset: qm9
+    method: pcgrad
     epochs: 120
     seeds: [42, 43, 44]
     early_stop: true
