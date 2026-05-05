@@ -28,3 +28,27 @@ variants:
     early_stop: true
     early_stop_patience: 15
     early_stop_min_delta: 0.0001
+  - label: gradnorm_proxy
+    dataset: rf1
+    method: gradnorm_proxy
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: kendall
+    dataset: rf1
+    method: kendall
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001
+  - label: pcgrad
+    dataset: rf1
+    method: pcgrad
+    epochs: 120
+    seeds: [42, 43, 44]
+    early_stop: true
+    early_stop_patience: 15
+    early_stop_min_delta: 0.0001

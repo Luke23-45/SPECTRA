@@ -44,6 +44,7 @@ def build_training_stage(
     cmd.append(f"method={variant.method}")
     cmd.append(f"train.epochs={variant.epochs}")
     cmd.append(f"seed={seed}")
+    cmd.append("require_cuda=true")
 
     if variant.early_stop:
         cmd.append("train.early_stop=true")
@@ -66,6 +67,7 @@ def build_training_stage(
         cmd.append(override.to_hydra_arg())
 
     output_dir = _resolve_output_dir(study_name, variant, seed)
+    cmd.append(f"output_dir={output_dir}")
     cmd.append(f"hydra.run.dir={output_dir}")
 
     return Stage(

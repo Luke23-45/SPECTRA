@@ -11,6 +11,9 @@ import torch
 import logging
 from omegaconf import DictConfig
 from spectra.data.nyuv2.dataset import resolve_nyuv2_root
+from spectra.data.qm9.dataset import resolve_qm9_root
+from spectra.data.rf1.dataset import resolve_rf1_root
+from spectra.data.yeast.dataset import resolve_yeast_root
 from spectra.train.artifacts import resolve_artifact_dir, resolve_resume_checkpoint
 
 logger = logging.getLogger("spectra.preflight")
@@ -42,6 +45,54 @@ def preflight_check(cfg: DictConfig, output_dir: Path) -> None:
                 errors.append(f"NYUv2 train index missing: {index_train}\n  → Run: python scripts/execution/experiment_runner.py nyuv2_generate")
             if not index_val.exists():
                 errors.append(f"NYUv2 val index missing: {index_val}\n  → Run: python scripts/execution/experiment_runner.py nyuv2_generate")
+    elif dataset_name == "rf1":
+        root = cfg.get("root") or cfg.get("dataset", {}).get("root")
+        if not root:
+            errors.append("RF1 dataset selected but 'root' directory not defined.")
+        else:
+            resolved_root = resolve_rf1_root(root)
+            for required in (
+                resolved_root / "metadata.json",
+                resolved_root / "train" / "data.npz",
+                resolved_root / "val" / "data.npz",
+            ):
+                if not required.exists():
+                    errors.append(
+                        f"RF1 prepared data missing: {required}\n"
+                        "  → Run: python -m spectra.data.rf1.ingest or python scripts/data/rf1_generate.py"
+                    )
+    elif dataset_name == "yeast":
+        root = cfg.get("root") or cfg.get("dataset", {}).get("root")
+        if not root:
+            errors.append("Yeast dataset selected but 'root' directory not defined.")
+        else:
+            resolved_root = resolve_yeast_root(root)
+            for required in (
+                resolved_root / "metadata.json",
+                resolved_root / "train" / "data.npz",
+                resolved_root / "val" / "data.npz",
+            ):
+                if not required.exists():
+                    errors.append(
+                        f"Yeast prepared data missing: {required}\n"
+                        "  → Run: python -m spectra.data.yeast.ingest or python scripts/data/yeast_generate.py"
+                    )
+    elif dataset_name == "qm9":
+        root = cfg.get("root") or cfg.get("dataset", {}).get("root")
+        if not root:
+            errors.append("QM9 dataset selected but 'root' directory not defined.")
+        else:
+            resolved_root = resolve_qm9_root(root)
+            for required in (
+                resolved_root / "metadata.json",
+                resolved_root / "train" / "data.npz",
+                resolved_root / "val" / "data.npz",
+            ):
+                if not required.exists():
+                    errors.append(
+                        f"QM9 prepared data missing: {required}\n"
+                        "  → Run: python -m spectra.data.qm9.ingest or python scripts/data/qm9_generate.py"
+                    )
 
     # 2. Tasks must be defined
     tasks = list(cfg.get("tasks", []))
@@ -69,6 +120,10 @@ def preflight_check(cfg: DictConfig, output_dir: Path) -> None:
         errors.append(f"Resume checkpoint not found: {ckpt_path}\n  → Check the path or remove 'resume_from' from config.")
 
     # 6. GPU memory sanity (warn only, do not block)
+    require_cuda = bool(cfg.get("require_cuda", False))
+    if require_cuda and not torch.cuda.is_available():
+        errors.append("CUDA is required for this run, but no GPU is available.")
+
     if torch.cuda.is_available():
         free_mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
         batch_size  = cfg.train.get("batch_size", 8)
