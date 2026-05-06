@@ -9,6 +9,7 @@ method:
   s_mode: batch_aware
   init_mode: auto_calibrate
   theta_grad_scale: 100.0
+  temperature: 2.0
   kappa: 0.1
 
 module:
@@ -16,4 +17,4 @@ module:
     _target_: spectra.engine.optimizers.BPGSEngine
 
 train:
-  grad_clip: 1.0
+  grad_clip: 10.0

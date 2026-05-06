@@ -175,11 +175,13 @@ class BPGS(nn.Module):
 
     def network_loss(self, raw_losses: List[torch.Tensor]) -> torch.Tensor:
         """
-        Fixed raw detached precision weighting for network parameters.
+        L1-normalized precision weighting for network parameters.
+        Weights sum to 1, preventing loss-scale drift and gradient clipping distortion.
         """
         self._maybe_auto_calibrate(raw_losses)
         s = self.get_s(raw_losses if self.s_mode == "batch_aware" else None)
-        weights = torch.exp(-s).detach()
+        weights = torch.exp(-s)
+        weights = (weights / weights.sum()).detach()
 
         total_loss = 0
         for i, loss in enumerate(raw_losses):
@@ -206,6 +208,7 @@ class BPGS(nn.Module):
         with torch.no_grad():
             s = self.get_s(losses if self.s_mode == "batch_aware" else None)
             weights = torch.exp(-s)
+            weights = weights / weights.sum()
             total = (weights * losses).sum()
 
         metrics: Dict[str, torch.Tensor] = {
@@ -226,6 +229,7 @@ class BPGS(nn.Module):
         with torch.no_grad():
             s = self.get_s()
             weights = torch.exp(-s)
+            weights = weights / weights.sum()
 
         stats: Dict[str, float] = {
             "bpgs/s_mode_batch_aware": 1.0 if self.s_mode == "batch_aware" else 0.0,
