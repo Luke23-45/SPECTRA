@@ -29,7 +29,7 @@ def _print_study_listing() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run robust, study-owned execution plans for the BPGS study suite."
+        description="Run reliable, study-owned execution plans for the BPGS study suite."
     )
     parser.add_argument("--study", help="Study name to execute.")
     parser.add_argument("--list", action="store_true", help="List study names and exit.")

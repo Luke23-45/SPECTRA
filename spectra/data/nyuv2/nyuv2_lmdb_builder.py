@@ -119,7 +119,7 @@ class PhysicsEngine:
         return safe_normal.astype(np.float32)
 
 class StatsReservoir:
-    """Reservoir sampling for robust quantile estimation (P01/P99)."""
+    """Reservoir sampling for stable quantile estimation (P01/P99)."""
     def __init__(self, channels: int, max_size: int = 1000):
         self.max_size = max_size
         self.reservoir = []

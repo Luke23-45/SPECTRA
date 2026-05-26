@@ -1,4 +1,4 @@
-"""Robust Weights & Biases integration for SPECTRA training and studies."""
+"""Reliable Weights & Biases integration for SPECTRA training and studies."""
 
 from __future__ import annotations
 

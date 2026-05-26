@@ -310,7 +310,7 @@ class ClinicalNormalizer(nn.Module):
             return x_ts, x_static
 
         if torch.isnan(x_ts).any() or torch.isinf(x_ts).any():
-            logger.warning("[NORMALIZER] NaN/Inf detected in input! Applying robust recovery.")
+            logger.warning("[NORMALIZER] NaN/Inf detected in input! Applying fallback recovery.")
             x_ts = torch.nan_to_num(x_ts, nan=0.0, posinf=1.0, neginf=-1.0)
 
         p_min, p_max, s_min, s_max, l_mask = self._prepare_broadcast(x_ts)

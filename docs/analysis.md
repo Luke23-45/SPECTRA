@@ -21,7 +21,7 @@ experiments/bpgs_analysis/analysis/
 
 - `common/`: shared I/O, path resolution, metric direction logic, statistical utilities, LaTeX helpers, and plotting style
 - `configs/`: analysis-side OmegaConf configuration
-- `scripts/`: argparse entrypoints that orchestrate analysis generation
+- `scripts/`: argparse entrypoints that manage analysis generation
 - `studies/`: study-specific extraction, plotting, and table logic
 
 ## How to Run It
