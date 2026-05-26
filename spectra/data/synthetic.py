@@ -65,7 +65,7 @@ class SyntheticMTLDataset(Dataset):
         gen_data = torch.Generator().manual_seed(seed)
         
         # Generator collision leakage prevention.
-        # If mapping_seed == seed, the first N elements of X will perfectly mirror W_shared.
+        # Use a separate generator for task mappings so inputs and weights are independent.
         # We must mathematically offset the generator states to guarantee orthogonality.
         gen_mapping = torch.Generator().manual_seed(mapping_seed + 1048576)
 

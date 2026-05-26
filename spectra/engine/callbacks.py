@@ -12,7 +12,6 @@ import pytorch_lightning as pl
 logger = logging.getLogger("spectra.callbacks")
 
 
-
 class GradientHealthCallback(pl.Callback):
     """
     Real-time gradient health monitoring for the shared backbone.
@@ -55,7 +54,7 @@ class GradientHealthCallback(pl.Callback):
         if backbone is None:
             return
 
-        # ── 1. Backbone total gradient norm ──────────────────────────
+        #  1. Backbone total gradient norm 
         squared_norms = []
         param_norms   = []
         for p in backbone.parameters():
@@ -73,7 +72,7 @@ class GradientHealthCallback(pl.Callback):
         # Set prog_bar=True for high-visibility telemetry
         pl_module.log("health/backbone_grad_norm", total_grad_norm, sync_dist=False, prog_bar=True)
 
-        # ── 2. Mean update-to-weight ratio ──────────────────────────
+        # 2. Mean update-to-weight ratio 
         if param_norms:
             ratios = [gn / pn for gn, pn in param_norms]
             mean_grad_weight_ratio = sum(ratios) / len(ratios)
@@ -118,7 +117,7 @@ class GradientHealthCallback(pl.Callback):
                     )
                     self._warned_this_epoch.add("exploding")
 
-        # ── 3. Spike detection (running-average-based) ──────────────────────────
+        # 3. Spike detection (running-average-based)
         if self._grad_norm_avg < 0:
             self._grad_norm_avg = total_grad_norm
         else:
@@ -148,7 +147,7 @@ class GradientHealthCallback(pl.Callback):
         if not getattr(pl_module, "automatic_optimization", True):
             self._track_grad_health(trainer, pl_module)
 
-        # ── 4. Weighter-specific health (B-PGS theta saturation) ────
+        # 4. Weighter-specific health (B-PGS theta saturation) 
         weighter = getattr(pl_module, "weighter", None)
         if weighter is not None and hasattr(weighter, "theta"):
             theta_abs_max = weighter.theta.data.abs().max().item()

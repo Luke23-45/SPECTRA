@@ -10,7 +10,7 @@ from spectra.empirical.generators.base import SyntheticGenerator, TaskSpec
 
 
 class RescalingControlledGenerator(SyntheticGenerator):
-    """Generate a fixed heterogeneous task bundle; stress is injected only in training losses."""
+    """Generate a shared task bundle; stress is injected only in training losses."""
 
     family_name = "rescaling"
 
@@ -69,6 +69,6 @@ class RescalingControlledGenerator(SyntheticGenerator):
         metadata = {
             "control_axis": "loss_rescaling",
             "task_bundle": [spec.name for spec in task_specs],
-            "description": "Underlying targets are fixed; only one task loss is rescaled during training.",
+            "description": "Underlying targets are unchanged; one task loss is rescaled during training.",
         }
         return x.float(), targets, task_specs, metadata

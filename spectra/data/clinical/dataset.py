@@ -1,22 +1,9 @@
 """
-Clinical ICU Data Loader.
+Clinical ICU data loader.
 
-Version: 2.5 (Safety-Critical)
-
-Description:
-    High-performance, fault-tolerant, and clinically-aware loading strategy
-    for ICU time-series data.
-
-    Architecture:
-    1. Tiered Acquisition: Automatic resolution of data from Local -> Cloud -> Build.
-    2. Zero-Copy LMDB: Structure-of-Arrays (SoA) storage for maximum throughput.
-    3. Phase-Logic: Mathematical definition of clinical states for Expert gating.
-    4. SOTA Augmentation: Physics-aware noise and sensor dropout simulation.
-
-    Safety Guarantees:
-    - Schema Validation: Hard-crashes on column mismatch (28-channel spec).
-    - NaN Traps: Filters corrupt episodes before they poison gradients.
-    - Memory Isolation: Enforces copy-on-read to prevent shared-memory corruption.
+The loader reads prepared LMDB episodes, validates the expected 28-channel
+schema, builds sliding windows, derives outcome and phase targets, and provides
+optional training-time sensor perturbations.
 """
 
 from __future__ import annotations
@@ -37,12 +24,10 @@ from huggingface_hub import snapshot_download
 from tqdm import tqdm
 from spectra.engine.distributed import get_rank
 
-# --- Configuration & Constants ---
 logger = logging.getLogger("spectra.data.clinical")
 logger.setLevel(logging.INFO)
 
-# Clinical Constants
-EXPECTED_CHANNELS = 28  # The "Clinical 28" Spec
+EXPECTED_CHANNELS = 28
 PHASE_STABLE = 0
 PHASE_PRESHOCK = 1
 PHASE_SHOCK = 2
@@ -52,61 +37,40 @@ def _is_outcome_positive_window(labels_window: np.ndarray, history_len: int) -> 
     fut_labels = labels_window[history_len:]
     return bool((fut_labels > 0.5).any())
 
-# ==============================================================================
-# CANONICAL COLUMN SPECIFICATION (The "Truth")
-# ==============================================================================
-# This is the AUTHORITATIVE column order. Data MUST conform to this.
-# Any deviation triggers a safety crash to prevent silent model failure.
+# This order must match the prepared clinical dataset metadata.
 CANONICAL_COLUMNS = [
-    # Group A: Hemodynamic (0-6)
     'HR', 'O2Sat', 'SBP', 'DBP', 'MAP', 'Resp', 'Temp',
-    # Group B: Sepsis Drivers / Labs (7-17)
     'Lactate', 'Creatinine', 'Bilirubin', 'Platelets', 'WBC',
     'pH', 'HCO3', 'BUN', 'Glucose', 'Hgb', 'Potassium',
-    # Group C: Electrolytes & Support (18-21)
     'Magnesium', 'Calcium', 'Chloride', 'FiO2',
-    # Group D: Static Context (22-27)
     'Age', 'Gender', 'Unit1', 'Unit2', 'HospAdmTime', 'ICULOS'
 ]
 
-# Fast-Access Slices for Models
 COLUMN_GROUPS = {
-    'hemodynamic': (0, 7),    # Indices 0-6
-    'labs': (7, 18),          # Indices 7-17
-    'electrolytes': (18, 22), # Indices 18-21
-    'static': (22, 28),       # Indices 22-27
+    'hemodynamic': (0, 7),
+    'labs': (7, 18),
+    'electrolytes': (18, 22),
+    'static': (22, 28),
 }
 
-# ==============================================================================
+
 # 0. TIERED DATA ORCHESTRATOR
-# ==============================================================================
+
 
 def ensure_data_ready(
     dataset_dir: str = "data/ready",
     hf_repo_id: Optional[str] = None, 
     force_download: bool = False
 ) -> None:
-    """
-    Guarantees data availability through a fault-tolerant Tiered Acquisition strategy.
-    
-    Tiers:
-    0. Local Verification: Checks checksums/existence of local LMDBs.
-    1. Cloud Mirror (HF): Pulls pre-processed "Frontier" binaries (Fastest).
-    2. Local Build (Raw): Pulls raw Kaggle CSVs and runs the ingestor (Fallback).
-    
-    Raises:
-        RuntimeError: If all tiers fail to provide valid data.
-    """
+    """Ensure that prepared clinical LMDB files are available."""
     dataset_path = Path(dataset_dir)
     required_splits = ["train", "val"]
     
-    # --- Tier 0: Local Integrity Check ---
     if not force_download:
         all_valid = True
         for split in required_splits:
             lmdb_p = dataset_path / split / "data.lmdb"
-            idx_p = dataset_path.parent / f"{split}_index.json" # Check parent for index
-            # Also check split-internal index if parent missing
+            idx_p = dataset_path.parent / f"{split}_index.json"
             if not idx_p.exists():
                 idx_p = dataset_path / f"{split}_index.json"
 
@@ -116,10 +80,9 @@ def ensure_data_ready(
                 break
         
         if all_valid:
-            logger.info(f"[Tier 0] Valid Local Data Found at '{dataset_path}'. System Ready.")
+            logger.info(f"[Tier 0] Valid local data found at '{dataset_path}'.")
             return
 
-    # --- Tier 1: Hugging Face (Pre-Processed) ---
     if hf_repo_id:
         logger.info(f"[Tier 1] Attempting download from HF Hub: {hf_repo_id}...")
         try:
@@ -130,29 +93,21 @@ def ensure_data_ready(
                 local_dir_use_symlinks=False,
                 resume_download=True
             )
-            logger.info("[Tier 1] Download Successful. Verifying integrity...")
+            logger.info("[Tier 1] Download completed.")
             return
         except Exception as e:
-            logger.warning(f"[Tier 1] HF Download Failed: {e}. Falling back to Build Tier...")
+            logger.warning(f"[Tier 1] HF download failed: {e}. Falling back to local build.")
 
-    # --- Tier 2: Local Build from Raw Sources ---
-    logger.info("[Tier 2] Triggering Raw Build Pipeline (Kaggle Sources)...")
+    logger.info("[Tier 2] Building clinical data from raw sources...")
     try:
-        # Dynamic import to avoid circular dependencies at module level
-        # This assumes `build_dataset.py` exists in the same package or is accessible.
         from .dataset_quality import build_quality_dataset as run_build_pipeline
         
-        # Ensure directory exists
         dataset_path.mkdir(parents=True, exist_ok=True)
         
-        # Execute Build
         logger.info("Starting Clinical Ingestor...")
-        # If run_build_pipeline is not exposed, we might call main. 
-        # Here we assume a callable interface exists or we'd shell out.
-        # For strictness, we assume the user has the build script.
         run_build_pipeline(output_dir=str(dataset_path))
         
-        logger.info("[Tier 2] Build Complete. Data is ready.")
+        logger.info("[Tier 2] Build complete. Data is ready.")
     except ImportError:
         logger.critical("[Tier 2] Build Pipeline script not found. Cannot generate data.")
         raise RuntimeError("FATAL: Data missing and Build Pipeline unavailable.")
@@ -160,19 +115,11 @@ def ensure_data_ready(
         logger.critical(f"[Tier 2] Build Pipeline Crashed: {e}")
         raise RuntimeError("FATAL: Could not acquire or build ICU Dataset. Check connectivity and permissions.")
 
-# ==============================================================================
 # 1. CORE DATASET
-# ==============================================================================
+
 
 class ICUTrajectoryDataset(Dataset):
-    """
-    The Foundation Class for ICU Time-Series.
-    
-    Capabilities:
-    1. Memory-Mapped I/O: Zero-copy reads from disk to GPU tensor via LMDB.
-    2. Virtual Indexing: O(1) lookups of sliding windows from variable-length episodes.
-    3. Phase Logic: Mathematically defines Sepsis phases for MoE training.
-    """
+    """LMDB-backed ICU time-series dataset with sliding-window indexing."""
     def __init__(
         self,
         dataset_dir: str = "data/ready",
@@ -191,14 +138,11 @@ class ICUTrajectoryDataset(Dataset):
         self.window_size = history_len + pred_len
         self.subset_pct = subset_pct
         
-        # Paths
         self.root_path = Path(dataset_dir) / split
         self.lmdb_path = self.root_path / "data.lmdb"
-        # Index usually sits in the parent or next to the LMDB dir
         self.index_path = self.root_path.parent / f"{split}_index.json"
         
         if not self.index_path.exists():
-             # Fallback: check inside the split directory
              self.index_path = self.root_path / f"{split}_index.json"
 
         if not self.lmdb_path.exists():
@@ -206,7 +150,6 @@ class ICUTrajectoryDataset(Dataset):
         if not self.index_path.exists():
             raise FileNotFoundError(f"Index Critical Failure: Not found at {self.index_path}")
 
-        # --- Load Index & Stats ---
         logger.info(f"[{split.upper()}] Loading Index: {self.index_path}")
         try:
             with open(self.index_path, 'r') as f:
@@ -215,7 +158,6 @@ class ICUTrajectoryDataset(Dataset):
                 self.metadata = full_index["metadata"]
                 self.global_stats = self.metadata.get("stats", None)
                 
-                # --- Episode-Level Subsetting (Piloting Mode) ---
                 if subset_pct < 1.0:
                     n_total = len(self.episode_metadata)
                     n_subset = max(1, int(n_total * subset_pct))
@@ -224,24 +166,19 @@ class ICUTrajectoryDataset(Dataset):
         except Exception as e:
             raise RuntimeError(f"Corrupted Index JSON: {e}")
 
-        # --- Schema Validation (Robust) ---
         if validate_schema:
-            # Support both legacy ("columns") and new ("ts_columns") keys
             ts_cols = self.metadata.get("ts_columns") or self.metadata.get("columns", [])
             
             if len(ts_cols) == 0:
-                logger.warning("No column metadata found. Defaulting to CANONICAL spec (Risky).")
+                logger.warning("No column metadata found. Using configured clinical column order.")
                 ts_cols = CANONICAL_COLUMNS
             elif len(ts_cols) != EXPECTED_CHANNELS:
                 logger.error(f"SCHEMA MISMATCH! Expected {EXPECTED_CHANNELS}, Found {len(ts_cols)}")
-                # If it's the old 7-channel dataset, we must crash to protect the model
                 if len(ts_cols) < 20: 
                     raise ValueError(f"Dataset schema outdated ({len(ts_cols)} cols). Rebuild required.")
-                logger.warning(f"Channel count mismatch. Forcing CANONICAL spec.")
+                logger.warning("Channel count mismatch. Using configured clinical column order.")
                 ts_cols = CANONICAL_COLUMNS
             
-            # Validate order against canonical (Prevent column swapping)
-            # [FIX] Normalize feature names (handle Bilirubin_total -> Bilirubin)
             self.ts_columns = [
                 'Bilirubin' if c == 'Bilirubin_total' else c 
                 for c in ts_cols
@@ -250,18 +187,13 @@ class ICUTrajectoryDataset(Dataset):
             for i, (data_col, canonical_col) in enumerate(zip(self.ts_columns, CANONICAL_COLUMNS)):
                 if data_col != canonical_col:
                     logger.warning(f"Column order mismatch at idx {i}: Data='{data_col}' vs Canon='{canonical_col}'")
-                    # Strict check: If names don't match after normalization, we risk column swapping.
-                    # However, we trust the canonical order is the ground truth.
 
 
-        # --- Virtual Map Construction ---
-        # Pre-calculate valid windows per episode for O(1) global indexing
         self.chunks_per_episode = []
         valid_episodes = 0
         
         for ep in self.episode_metadata:
             t_len = ep["length"]
-            # A valid window must have (history + pred) length
             n_chunks = max(0, t_len - self.window_size + 1)
             self.chunks_per_episode.append(n_chunks)
             if n_chunks > 0:
@@ -270,9 +202,8 @@ class ICUTrajectoryDataset(Dataset):
         self.cumulative_chunks = np.cumsum(self.chunks_per_episode)
         self.total_chunks = int(self.cumulative_chunks[-1]) if len(self.cumulative_chunks) > 0 else 0
         
-        # --- Lazy LMDB Handle ---
         self._lmdb_env = None
-        self._parent_pid = os.getpid()  # Fork-safety tracking
+        self._parent_pid = os.getpid()
         self.max_cache_size = max_cache_size
 
         logger.info(f"[{split.upper()}] Initialized. Windows: {self.total_chunks:,} | Episodes: {valid_episodes:,}")
@@ -281,15 +212,9 @@ class ICUTrajectoryDataset(Dataset):
         return self.total_chunks
 
     def _init_lmdb(self):
-        """
-        Thread-safe lazy initialization of the LMDB environment.
-        PID-Aware Multiprocessing Safety:
-        Ensures that if the dataset is forked (DataLoader workers), 
-        the child processes open their own LMDB environment handles.
-        """
+        """Open an LMDB handle for the current process."""
         curr_pid = os.getpid()
         if self._lmdb_env is not None and curr_pid != self._parent_pid:
-            # Fork detected! The inherited handle is unsafe in child.
             self._lmdb_env = None
             self._parent_pid = curr_pid
 
@@ -313,37 +238,23 @@ class ICUTrajectoryDataset(Dataset):
             return data
 
     def close(self):
-        """
-        Explicitly closes the LMDB environment.
-        Necessary for clean resource management before DDP worker forking.
-        """
+        """Close the current LMDB handle."""
         if self._lmdb_env is not None:
             self._lmdb_env.close()
             self._lmdb_env = None
             logger.info(f"[{self.split.upper()}] LMDB Environment closed.")
 
-    @functools.lru_cache(maxsize=512)  # Reduced cache size to prevent OOM
+    @functools.lru_cache(maxsize=512)
     def _fetch_numpy(self, key: str, dtype_str: str, shape: Tuple[int, ...]) -> np.ndarray:
-        """
-        Fetches and deserializes a numpy array from LMDB.
-        CRITICAL: Uses .copy() to decouple memory from LMDB buffer, preventing read-only errors.
-        """
+        """Fetch and deserialize a NumPy array from LMDB."""
         raw = self._read_bytes(key)
         return np.frombuffer(raw, dtype=np.dtype(dtype_str)).reshape(shape).copy()
 
     def _get_phase_label(self, labels_window: np.ndarray) -> int:
-        """
-        Derives the MoE Gating Label (Stable/Pre-Shock/Shock).
-        
-        Definitions:
-        - PHASE_SHOCK (2): Sepsis active *during* observation (Already sick).
-        - PHASE_PRESHOCK (1): Sepsis NOT active in obs, but appears in future (Transition).
-        - PHASE_STABLE (0): No Sepsis in obs or future.
-        """
+        """Derive the phase label from observation and prediction windows."""
         obs_labels = labels_window[:self.history_len]
         fut_labels = labels_window[self.history_len:]
         
-        # Use explicit float thresholds for SepsisLabel stability
         if (obs_labels > 0.5).any():
             return PHASE_SHOCK
         elif (fut_labels > 0.5).any():
@@ -355,18 +266,13 @@ class ICUTrajectoryDataset(Dataset):
         if idx < 0 or idx >= self.total_chunks:
             raise IndexError(f"Index {idx} out of bounds (Size: {self.total_chunks})")
 
-        # 1. Resolve Global Index -> Episode + Local Offset
         ep_idx = np.searchsorted(self.cumulative_chunks, idx, side='right')
         chunk_start_global = 0 if ep_idx == 0 else self.cumulative_chunks[ep_idx - 1]
         local_t_start = int(idx - chunk_start_global)
 
-        # 2. Retrieve Metadata
         ep_meta = self.episode_metadata[ep_idx]
         modalities = ep_meta.get("modalities", {})
         
-        # 3. Fetch Full Arrays (Cached) with DEFENSIVE extraction
-        
-        # --- Vitals (Required) ---
         v_meta = modalities.get("vitals")
         if v_meta is None:
             raise KeyError(f"Episode {ep_meta.get('episode_id', ep_idx)} missing 'vitals'.")
@@ -377,13 +283,11 @@ class ICUTrajectoryDataset(Dataset):
             tuple(v_meta["shape"])
         )
         
-        # Validate channel dimensions
         if full_vitals.shape[1] != EXPECTED_CHANNELS:
             raise ValueError(
                 f"Vitals channel mismatch: got {full_vitals.shape[1]}, expected {EXPECTED_CHANNELS}."
             )
         
-        # --- Static Context (Required) ---
         s_meta = modalities.get("static")
         if s_meta is not None:
             full_static = self._fetch_numpy(
@@ -392,12 +296,9 @@ class ICUTrajectoryDataset(Dataset):
                 tuple(s_meta["shape"])
             )
         else:
-            # Fallback: Extract static from vitals Group D (indices 22-27)
-            # Use first row since static context is time-invariant
             static_start, static_end = COLUMN_GROUPS['static']
             full_static = full_vitals[0, static_start:static_end].copy()
         
-        # --- Labels (Required) ---
         l_meta = modalities.get("labels")
         if l_meta is None:
             raise KeyError(f"Episode {ep_meta.get('episode_id', ep_idx)} missing 'labels'.")
@@ -408,11 +309,8 @@ class ICUTrajectoryDataset(Dataset):
             tuple(l_meta["shape"])
         )
 
-        # --- Masks (Required for Robust Encoding) ---
-        # [FIX] Load imputation masks to inform model of data reliability
         m_meta = modalities.get("masks")
         if m_meta is None:
-            # Backward compatibility: If no masks, assume all real (1.0)
             full_masks = np.ones_like(full_vitals)
         else:
             full_masks = self._fetch_numpy(
@@ -421,10 +319,8 @@ class ICUTrajectoryDataset(Dataset):
                 tuple(m_meta["shape"])
             )
 
-        # 4. Slice Window
         t_end = local_t_start + self.window_size
         
-        # Bounds Check (Defensive)
         if t_end > len(full_vitals):
             raise ValueError(f"Window overrun for episode {ep_meta['episode_id']}")
 
@@ -432,23 +328,15 @@ class ICUTrajectoryDataset(Dataset):
         labels_win = full_labels[local_t_start : t_end]
         masks_win = full_masks[local_t_start : t_end]
 
-        # 5. Split Input/Output
         obs_data = vitals_win[:self.history_len]
         fut_data = vitals_win[self.history_len:]
         
-        # Split masks (Encoder needs src_mask, Reward needs future_mask)
         obs_mask = masks_win[:self.history_len]
         fut_mask = masks_win[self.history_len:]
         
-        # RL Topology Awareness
-        # is_terminal: Does the episode actually end? (True if end of history)
-        # is_truncated: Does the sequence window cut off before the episode end?
         is_terminal = (t_end >= len(full_vitals))
         is_truncated = (t_end < len(full_vitals))
 
-        # Label Synthesis
-        # phase: Gating signal (Stable/Pre-Shock/Shock)
-        # outcome: Binary target (Does Sepsis occur in next prediction window?)
         phase = self._get_phase_label(labels_win)
         outcome = float(_is_outcome_positive_window(labels_win, self.history_len))
 
@@ -469,15 +357,8 @@ class ICUTrajectoryDataset(Dataset):
             }
         }
 
-# ==============================================================================
-# 2. SOTA DATASET: Robustness & Augmentation
-# ==============================================================================
-
-class ICUSotaDataset(ICUTrajectoryDataset):
-    """
-    The 'SOTA' Wrapper for Training.
-    Introduces physical simulations (Noise, Sensor Drops) to ensure model robustness.
-    """
+class ICUDataset(ICUTrajectoryDataset):
+    """ICU training dataset with optional sensor noise and channel dropout."""
     def __init__(
         self,
         dataset_dir: str = "data/ready",
@@ -509,74 +390,41 @@ class ICUSotaDataset(ICUTrajectoryDataset):
         try:
             sample = super().__getitem__(idx)
             
-            # --- Robustness Checks ---
-            # 1. NaN Guard: Check BOTH input and future data.
-            # AWR calculations on Future Data fail if NaNs are present.
             if torch.isnan(sample["input"]).any() or torch.isnan(sample["meta"]["future_data"]).any():
                 logger.debug(f"Dropped NaN sample at idx {idx}")
                 return None # Collator will filter this out
 
             if self.is_training:
-                # 2. Gaussian Sensor Noise
                 if self.augment_noise > 0:
                     noise = torch.randn_like(sample["input"]) * self.augment_noise
                     sample["input"] += noise
                 
-                # 3. Sensor Dropout (Masking)
-                # Simulates a sensor physically disconnecting (zeroing a channel)
                 if self.augment_mask_prob > 0:
-                    # Create channel mask [C]
                     mask = torch.rand(sample["input"].shape[1]) > self.augment_mask_prob
-                    # Broadcast mask [C] -> [T, C]
                     mask_broadcast = mask.float()
                     sample["input"] *= mask_broadcast
                     
-                    # [Patch 62] Synchronize Imputation Mask
-                    # Rationale: If we drop a sensor, we must tell the model it's MISSING (0), 
-                    # not VALID ZERO (1). Otherwise, it learns falsely that 0.0 is a valid readout.
                     if "src_mask" in sample["meta"]:
                          sample["meta"]["src_mask"] *= mask_broadcast
 
             return sample
 
         except Exception as e:
-            # Catch-all to prevent DataLoader worker crashes
             logger.error(f"FATAL Load Error at idx {idx}: {e}", exc_info=False)
             return None
 
-# ==============================================================================
-# 3. COLLATOR
-# ==============================================================================
-
 def robust_collate_fn(batch: List[Optional[Dict]]) -> Dict[str, torch.Tensor]:
-    """
-    A crash-proof collator.
-    Filters out 'None' samples returned by SotaDataset (due to NaNs or errors).
-    """
+    """Collate valid samples and drop samples rejected by the dataset."""
     valid_batch = [item for item in batch if item is not None]
     
     if len(valid_batch) == 0:
         logger.warning("Empty Batch detected in Collate! (All samples failed robustness check)")
-        # Return empty dict - The Lightning Loop must handle this (it usually skips the step)
         return {}
     
     return default_collate(valid_batch)
 
-# ==============================================================================
-# 4. STRATIFIED SAMPLER (Gap 5 Fix)
-# ==============================================================================
-
-# ==============================================================================
-# 5. SAMPLERS (State-Persistent)
-# ==============================================================================
-
 class StatefulWeightedSampler(Sampler):
-    """
-    State-Persistent Weighted Sampler (DDP Hermetic).
-    Rationale: Standard WeightedRandomSampler resets on resumption.
-    This version uses a rank-aware deterministic generator and persistent 
-    epoch/consumed counters for exact DDP-safe resumption.
-    """
+    """Weighted sampler with resumable epoch state."""
     def __init__(self, weights, num_samples, replacement=True, seed=42):
         # torch.utils.data.Sampler does not accept a positional argument on
         # newer PyTorch releases; use the version-safe no-arg constructor.
@@ -587,7 +435,7 @@ class StatefulWeightedSampler(Sampler):
         self.seed = seed
         self.epoch = 0
         self.consumed = 0
-        self.rank = get_rank() # safe utility import assumed
+        self.rank = get_rank()
         self.indices = None
 
     def __len__(self):
@@ -595,34 +443,19 @@ class StatefulWeightedSampler(Sampler):
 
     def set_epoch(self, epoch: int):
         """Called by Trainer at start of epoch."""
-        # Resumption Safety
-        # Only reset state if we are truly starting a DIFFERENT epoch.
-        # If resuming (load_state_dict -> set_epoch(same_epoch)), we MUST preserve 'consumed'.
         if epoch != self.epoch:
             self.consumed = 0
             self.epoch = epoch
             self.indices = None
         else:
-            # Same epoch (Resumption case) - keep 'consumed', but ensure indices are rebuilt
-            # if they haven't been already (e.g. fresh init with load_state_dict)
             self.epoch = epoch
-            # Do NOT reset indices to None if they are already valid? 
-            # Actually indices are not saved, so they are always None on resume.
-            # But set_epoch is called after load_state_dict.
             pass
 
     def __iter__(self):
         if self.indices is None:
-            # Deterministic multi-gpu branching
-            # We seed with (seed + epoch + rank) to ensure 
-            # 1. Deterministic reconstruction after crash
-            # 2. Unique data stream per GPU rank
             g = torch.Generator()
-            # Seed Domain Isolation
-            # Prevents seed collisions between high epoch counts and higher rank indices.
             g.manual_seed(self.seed + self.epoch + self.rank * 1000000)
             
-            # Reconstruction is fast (vectorized on CPU)
             self.indices = torch.multinomial(
                 self.weights, 
                 self.num_samples, 
@@ -630,17 +463,15 @@ class StatefulWeightedSampler(Sampler):
                 generator=g
             )
         
-        # Resume from precise offset
         for i in range(self.consumed, self.num_samples):
             self.consumed += 1
             yield int(self.indices[i])
             
-        # End of stream hygiene
         self.indices = None
         self.consumed = 0
 
     def state_dict(self):
-        """Memory-efficient state (No large tensors)."""
+        """Return sampler state without storing sampled indices."""
         return {
             "consumed": self.consumed, 
             "epoch": self.epoch,
@@ -651,7 +482,7 @@ class StatefulWeightedSampler(Sampler):
         self.consumed = state_dict.get("consumed", 0)
         self.epoch = state_dict.get("epoch", 0)
         self.seed = state_dict.get("seed", self.seed)
-        self.indices = None # Force reconstruction with new state
+        self.indices = None
         logger.info(f"[Sampler] DDP-Link Restored: Epoch {self.epoch}, Consumed {self.consumed}")
 
 def create_sepsis_aware_sampler(
@@ -661,34 +492,13 @@ def create_sepsis_aware_sampler(
     seed: int = 42,
     target: str = "outcome",
 ) -> StatefulWeightedSampler:
-    """
-    Create a weighted sampler that oversamples sepsis-positive windows.
-
-    Problem: With rare positives, random batches often contain zero positive windows,
-    causing noisy gradients for the outcome head.
-
-    Solution: Assign higher sampling weights to windows positive for the selected
-    target policy (default: outcome in prediction horizon).
-
-    Args:
-        dataset: ICUTrajectoryDataset or ICUSotaDataset instance.
-        sepsis_boost_factor: Weight multiplier for sepsis-positive windows (default 10x).
-        max_samples: Maximum samples per epoch.
-        seed: Random seed for reproducibility.
-        target: Sampling target — ``'outcome'`` or ``'phase'``.
-
-    Returns:
-        StatefulWeightedSampler ready to pass to DataLoader.
-    """
+    """Create a weighted sampler that oversamples sepsis-positive windows."""
     n_samples = len(dataset)
     epoch_samples = min(n_samples, int(max_samples)) if max_samples is not None else n_samples
     if epoch_samples <= 0:
         raise ValueError(f"max_samples must be positive, got {max_samples}")
-    # Initialize weights (default = 1.0 for normal samples)
     weights = torch.ones(n_samples)
     
-    # Sampler I/O Race Protection
-    # Prevents parallel workers or different subset runs from thumping I/O.
     rank = get_rank()
     subset_str = getattr(dataset, "subset_pct", 1.0)
     if target not in {"outcome", "phase"}:
@@ -696,12 +506,9 @@ def create_sepsis_aware_sampler(
             f"Unknown sampler target '{target}'. Valid: ['outcome', 'phase']"
         )
 
-    # Cache key must include target policy. Otherwise an old 'phase' index can be
-    # silently reused for 'outcome' runs (or vice versa), causing objective mismatch.
     index_name = f"{dataset.split}_sepsis_index_{target}_sub{subset_str}.npy"
     index_path = dataset.root_path / index_name
     
-    # 1. Wait-to-Load Logic for non-zero ranks
     if not index_path.exists() and rank != 0:
         logger.info(f"[Sampler] Rank {rank} waiting for Rank 0 to build index...")
         for _ in range(120): # 10 minute timeout
@@ -717,7 +524,7 @@ def create_sepsis_aware_sampler(
                     logger.warning("[Sampler] Index size mismatch! Rebuilding...")
                     index_path.unlink()
                 else:
-                    time.sleep(10) # Give rank 0 time to unlink
+                    time.sleep(10)
                 return create_sepsis_aware_sampler(
                     dataset, sepsis_boost_factor, max_samples, seed, target
                 )
@@ -726,22 +533,18 @@ def create_sepsis_aware_sampler(
                 logger.warning(f"[Sampler] Corrupt index detected, rebuilding: {e}")
                 if index_path.exists(): index_path.unlink()
             else:
-                time.sleep(10) # Wait for reconstruction
+                time.sleep(10)
             return create_sepsis_aware_sampler(
                 dataset, sepsis_boost_factor, max_samples, seed, target
             )
     else:
-        # 2. Build Block (Rank 0 or Lead Worker reaches here)
         logger.info(f"[Sampler] Rank {rank} building Global Sepsis Index (100% Coverage, N={n_samples:,})...")
         is_sepsis = np.zeros(n_samples, dtype=bool)
         
-        # Ensure LMDB is initialized for the main process
         dataset._init_lmdb()
         
-        # Global window pointer
         global_ptr = 0
         
-        # Iterate over episodes to minimize LMDB reads (SoA speed)
         for ep_idx in tqdm(range(len(dataset.episode_metadata)), desc="Indexing Sepsis"):
             ep_meta = dataset.episode_metadata[ep_idx]
             n_chunks = dataset.chunks_per_episode[ep_idx]
@@ -749,7 +552,6 @@ def create_sepsis_aware_sampler(
             if n_chunks <= 0:
                 continue
                 
-            # Fetch full labels for the episode
             l_meta = ep_meta["modalities"]["labels"]
             labels = dataset._fetch_numpy(
                 l_meta["key"], 
@@ -757,14 +559,11 @@ def create_sepsis_aware_sampler(
                 tuple(l_meta["shape"])
             )
             
-            # For each window in this episode
             for local_idx in range(n_chunks):
-                # Derive positive window according to selected sampling target
                 window = labels[local_idx : local_idx + dataset.window_size]
                 if target == "phase":
                     is_positive = dataset._get_phase_label(window) > 0
                 else:
-                    # Default and clinical-safe: match outcome label definition
                     is_positive = _is_outcome_positive_window(window, dataset.history_len)
 
                 if is_positive:
@@ -772,7 +571,6 @@ def create_sepsis_aware_sampler(
             
             global_ptr += n_chunks
             
-        # Atomic Save via Temp Move
         if rank == 0:
             try:
                 temp_path = index_path.with_suffix(".tmp.npy")
@@ -782,15 +580,12 @@ def create_sepsis_aware_sampler(
             except Exception as e:
                 logger.warning(f"[Sampler] Could not save Sepsis Index: {e}")
             
-    # Apply weights
     weights[is_sepsis] = sepsis_boost_factor
     sepsis_count = int(is_sepsis.sum())
     rate = sepsis_count / n_samples
     
     logger.info(f"[Sampler] Coverage: 100% | Sepsis Detected: {sepsis_count:,} | Rate: {rate*100:.2f}% | Boost factor: {sepsis_boost_factor}x")
     
-    # Create the weighted sampler
-    # Use StatefulWeightedSampler for gapless resumption
     sampler = StatefulWeightedSampler(
         weights=weights,
         num_samples=epoch_samples,

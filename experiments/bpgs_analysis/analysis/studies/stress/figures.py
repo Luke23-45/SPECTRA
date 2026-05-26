@@ -1,26 +1,8 @@
 """
-Stress test figures — curated, publication-grade (v2 — redesigned).
+Stress-test figure generation.
 
-Produces 5 figures:
-1. ``stress_robustness_summary``:  3x2 panel (metric x experiment) with panel labels and seed bands.
-2. ``scale_stress_curves``:       1x3 panel: metric vs scale factor with +/-1sigma shaded bands.
-3. ``degradation_comparison``:    1x3 panel: % degradation per metric (scale vs rescaling grouped bars).
-4. ``rescaling_stress_curves``:   1x3 panel: metric vs scale factor with +/-1sigma shaded bands.
-5. ``heterogeneous_panel``:       1x3 panel: metric by regime with grouped bars and error bars.
-
-Design rationale
-----------------
-* **Dumbbell chart removed**: only showed x1 vs x1000, ignoring intermediate
-  scales (x10, x100).  Replaced by line+band curves that show the full
-  degradation trajectory across all scale factors.
-* **Diverging bar removed**: hatch + alpha encoding for metrics was
-  illegible.  Replaced by clean line+band curves for rescaling.
-* **Single-metric degradation bar removed**: only showed macro_score.
-  Replaced by per-metric panels comparing scale vs rescaling.
-* **Heterogeneous panel expanded**: now includes score_std (1x3 instead
-  of 1x2) with panel labels.
-* All figures use panel labels (a), (b), (c) for cross-referencing.
-* Legends are deduplicated, properly positioned, and never overlap data.
+Produces summary, scale-stress, rescaling-stress, degradation, and
+heterogeneous-regime figures.
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@ name = "spectra-mtl"
 version = "1.0.0"
 description = "SPECTRA: Frequency-Decoupled Manifolds and Projected Bayesian Scaling for Massive Multi-Task Learning"
 authors = [
-    {name = "Luke Green"}
+    {name = "Neryva Lab"}
 ]
 readme = "README.md"
 requires-python = ">=3.9"

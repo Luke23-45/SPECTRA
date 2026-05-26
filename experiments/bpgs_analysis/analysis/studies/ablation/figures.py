@@ -1,10 +1,7 @@
 """
-Ablation study figures — curated, publication-grade.
+Ablation study figure generation.
 
-Produces 4 figures:
-- ``ablation_training_curves``:   Convergence with seed bands (key: SL-auto instability).
-- ``ablation_weight_dynamics``:   Task-weight evolution panels (key: mechanism insight).
-- ``ablation_per_task_val_curves``: Per-task validation metrics (key: task-level trade-offs).
+Produces training curves, task-weight dynamics, and per-task validation curves.
 """
 
 from __future__ import annotations

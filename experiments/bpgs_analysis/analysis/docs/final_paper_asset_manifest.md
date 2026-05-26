@@ -34,4 +34,4 @@
 
 - Every core claim appears in the main paper.
 - Per-task detail is preserved in the supplement.
-- The split is fixed so paper writing can proceed without more figure-selection churn.
+- The asset split is stable for paper writing and review.

@@ -1,9 +1,4 @@
-"""
-Universal DataModule for SPECTRA experiments.
-
-Orchestrates data acquisition, split management, and hardware-optimized 
-DataLoader instantiation for heterogeneous MTL benchmarks.
-"""
+"""PyTorch Lightning DataModule for SPECTRA datasets."""
 
 import logging
 import os
@@ -18,7 +13,7 @@ from spectra.data.nyuv2.dataset import NYUv2Dataset, resolve_nyuv2_root
 from spectra.data.rf1.dataset import RF1Dataset, resolve_rf1_root
 from spectra.data.yeast.dataset import YeastDataset, resolve_yeast_root
 from spectra.data.qm9.dataset import QM9Dataset, resolve_qm9_root
-from spectra.data.clinical.dataset import ICUTrajectoryDataset, ICUSotaDataset, create_sepsis_aware_sampler, robust_collate_fn
+from spectra.data.clinical.dataset import ICUTrajectoryDataset, ICUDataset, create_sepsis_aware_sampler, robust_collate_fn
 
 logger = logging.getLogger("spectra.datamodule")
 
@@ -60,15 +55,7 @@ def _loader_kwargs(dataset_name: str, num_workers: int, cfg: DictConfig) -> Dict
 
 
 def _auto_num_workers() -> int:
-    """Choose the optimal worker count based on available hardware.
-
-    Strategy:
-    - Reserve 1-2 cores for the main training process.
-    - If a CUDA GPU is present, workers are mostly doing I/O / augmentation
-      so we can afford more parallelism (up to cpu_count - 1).
-    - On CPU-only training, be more conservative (up to cpu_count - 2).
-    - Floor at 2, ceiling at 16 to avoid oversubscription on very large machines.
-    """
+    """Choose a bounded worker count from CPU and CUDA availability."""
     cpu_count = os.cpu_count() or 1
     has_cuda = torch.cuda.is_available()
     reserved = 1 if has_cuda else 2
@@ -101,31 +88,21 @@ def _use_nyuv2_batch_augmentation(cfg: DictConfig) -> bool:
 
 
 class SPECTRADataModule(pl.LightningDataModule):
-    """
-    Central dispatcher for all SPECTRA benchmarks.
-    
-    Guarantees:
-    - Rank-aware seeding for deterministic DDP streams.
-    - Tiered Acquisition: Automatic fallback from Cloud to Local Build.
-    - Schema Integrity: Cross-dataset standardization via {input, targets, meta}.
-    """
+    """Central dispatcher for SPECTRA training datasets."""
 
     def __init__(self, cfg: DictConfig):
         super().__init__()
         self.cfg = cfg
-        # Robustly identify dataset name from either global or nested config
         self.dataset_name = cfg.get("dataset_name") or cfg.get("dataset", {}).get("name", "synthetic")
         
-        # Placeholders
         self.train_ds = None
         self.val_ds = None
         self.test_ds = None
 
     def prepare_data(self):
-        """Tiered Acquisition logic (Rank 0 only)."""
+        """Prepare datasets that require local materialization."""
         if self.dataset_name == "clinical":
             from spectra.data.clinical.dataset import ensure_data_ready
-            # Robust extraction of clinical parameters
             dataset_dir = self.cfg.get("dataset_dir") or self.cfg.get("dataset", {}).get("dataset_dir", "data/ready")
             hf_repo = self.cfg.get("hf_repo") or self.cfg.get("dataset", {}).get("hf_repo", None)
             force_download = self.cfg.get("force_download") or self.cfg.get("dataset", {}).get("force_download", False)
@@ -136,7 +113,6 @@ class SPECTRADataModule(pl.LightningDataModule):
                 force_download=force_download
             )
         elif self.dataset_name == "nyuv2":
-            # Validate that LMDB data exists before training starts
             root = _cfg_lookup(self.cfg, "root", "datasets/nyuv2_lmdb")
             from pathlib import Path
             root_path = resolve_nyuv2_root(root)
@@ -146,7 +122,7 @@ class SPECTRADataModule(pl.LightningDataModule):
                 if not lmdb_path.exists() or not index_path.exists():
                     logger.warning(
                         f"[NYUv2] Missing data for split '{split}'. "
-                        f"Run: python -m spectra.data.nyuv2.nyuv2_lmdb_sota"
+                        f"Run: python scripts/data/nyuv2_generate.py"
                     )
         elif self.dataset_name == "rf1":
             root = _cfg_lookup(self.cfg, "root", "datasets/rf1")
@@ -206,7 +182,7 @@ class SPECTRADataModule(pl.LightningDataModule):
                 input_dim=self.cfg.model.input_dim,
                 hidden_dim=self.cfg.model.d_model,
                 seed=self.cfg.seed + 1,
-                mapping_seed=self.cfg.seed  # Critical: same function/mapping as train
+                mapping_seed=self.cfg.seed
             )
 
         elif self.dataset_name == "nyuv2":
@@ -305,7 +281,7 @@ class SPECTRADataModule(pl.LightningDataModule):
             dataset_dir = self.cfg.get("dataset_dir") or self.cfg.get("dataset", {}).get("dataset_dir", "data/ready")
             subset_pct = self.cfg.get("subset_pct") or self.cfg.get("dataset", {}).get("subset_pct", 1.0)
             
-            self.train_ds = ICUSotaDataset(
+            self.train_ds = ICUDataset(
                 dataset_dir=dataset_dir,
                 split="train",
                 augment_noise=self.cfg.train.get("augment_noise", 0.0),

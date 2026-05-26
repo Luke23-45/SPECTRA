@@ -1,33 +1,9 @@
 """
-NYUv2 Multi-Task Dense Prediction Dataset.
+NYUv2 multi-task dense prediction dataset.
 
-Description:
-    Loads the NYUv2 dataset from LMDB storage (materialized by nyuv2_lmdb_sota.py)
-    and returns SPECTRA-compatible batch dictionaries with three task targets:
-    1. Semantic Segmentation (13 classes)
-    2. Monocular Depth Estimation
-    3. Surface Normal Prediction
-
-    This follows the same architectural philosophy as the clinical pipeline
-    (spectra/data/clinical/dataset.py) but adapted for dense image prediction.
-
-Data Format:
-    Input:  RGB image  → [3, H, W] float32
-    Target: Segmentation → [H, W] int64, class indices {0..12, 255=ignore}
-            Depth         → [1, H, W] float32, metric meters
-            Normals       → [3, H, W] float32, unit direction (x, y, z)
-
-Safety Guarantees:
-    - Fork safety: LMDB env re-initialized per worker process
-    - Dtype enforcement: segmentation is ALWAYS int64 (CrossEntropyLoss safe)
-    - NaN/Inf trapping: depth and normals checked for corruption
-    - Ignore class remapping: invalid labels → 255 for cross-entropy ignore_index
-    - Label clamping: ensures all label values are in {0..12, 255}
-
-References:
-    - Silberman et al. "Indoor Segmentation and Support Inference from RGBD Images" (ECCV 2012)
-    - Liu et al. "End-to-End Multi-Task Learning with Attention" (CVPR 2019) [MTAN]
-    - Standard 13-class split: https://github.com/lorenmt/mtan
+The dataset reads the repository's LMDB materialization and returns
+SPECTRA-compatible batches for semantic segmentation, depth estimation, and
+surface-normal prediction.
 """
 
 from __future__ import annotations
@@ -43,20 +19,13 @@ from torch.utils.data import Dataset
 
 from .transforms import NYUv2TrainTransform, NYUv2TestTransform
 
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
 logger = logging.getLogger("spectra.data.nyuv2")
 
-# Standard NYUv2 MTL benchmark split sizes
 EXPECTED_SPLIT_SIZES = {
     "train": 795,
     "val": 654,
 }
 
-# The 13 semantic classes in the standard NYUv2 MTL split
-# (Reduced from the original 894 classes by Eigen & Fergus)
 NYUv2_CLASS_NAMES = [
     "bed", "books", "ceiling", "chair", "floor",
     "furniture", "objects", "painting", "sofa", "table",
@@ -64,7 +33,7 @@ NYUv2_CLASS_NAMES = [
 ]
 
 NUM_CLASSES = 13
-IGNORE_INDEX = 255  # Standard ignore index for CrossEntropyLoss
+IGNORE_INDEX = 255
 
 
 def resolve_nyuv2_root(root: str | Path) -> Path:
@@ -85,15 +54,11 @@ def resolve_nyuv2_root(root: str | Path) -> Path:
     return root_path
 
 
-# =============================================================================
-# CORE DATASET
-# =============================================================================
-
 class NYUv2Dataset(Dataset):
     """
     NYUv2 Multi-Task Learning Dataset.
 
-    Loads pre-processed data from LMDB storage (materialized by nyuv2_lmdb_sota.py):
+    Loads prepared data from LMDB storage:
         root/
             train/data.lmdb
             val/data.lmdb
@@ -102,15 +67,15 @@ class NYUv2Dataset(Dataset):
 
     Returns SPECTRA-compatible batch dictionary:
         {
-            "input": [3, H, W] float32     — RGB image
+            "input": [3, H, W] float32
             "targets": {
-                "segmentation": [H, W] int64    — class indices {0..12, 255}
-                "depth":        [1, H, W] float32 — metric depth (meters)
-                "normals":      [3, H, W] float32 — surface normals (x,y,z)
+                "segmentation": [H, W] int64
+                "depth":        [1, H, W] float32
+                "normals":      [3, H, W] float32
             }
             "meta": {
-                "depth_mask":   [1, H, W] float32 — 1=valid, 0=invalid depth
-                "sample_id":    str               — reproducibility key
+                "depth_mask":   [1, H, W] float32
+                "sample_id":    str
             }
         }
 
@@ -181,7 +146,7 @@ class NYUv2Dataset(Dataset):
         self._lmdb_env = None
         self._parent_pid = os.getpid()
 
-        # --- Build Index (Subset support) ---
+        #  Build Index (Subset support) 
         all_indices = list(range(self.data_len))
         
         if self.split == "train" and subset_file:
@@ -224,7 +189,7 @@ class NYUv2Dataset(Dataset):
         else:
             self.indices = all_indices
 
-        # --- Build Transforms ---
+        #  Build Transforms 
         if self.split == "train" and augmentation:
             self.transform = NYUv2TrainTransform(normalize_rgb=normalize_rgb)
         else:
@@ -374,9 +339,8 @@ class NYUv2Dataset(Dataset):
         return {"input": inputs, "targets": targets, "meta": meta}
 
 
-# =============================================================================
-# STANDALONE VERIFICATION (Smoke Test)
-# =============================================================================
+
+# STANDALONE VERIFICATION 
 
 if __name__ == "__main__":
     import sys

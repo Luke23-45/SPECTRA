@@ -1,7 +1,7 @@
 name: 06_pure_loss_rescaling
 group: stress
 kind: empirical
-description: Pure post-hoc loss-rescaling stress with fixed underlying targets.
+description: Pure post-hoc loss-rescaling stress with unchanged underlying targets.
 notes: Primary scale-robustness evidence for the paper.
 variants:
   - label: x1

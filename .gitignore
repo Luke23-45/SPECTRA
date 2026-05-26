@@ -27,8 +27,6 @@ share/python-wheels/
 MANIFEST
 
 # PyInstaller
-#  Often these are Python scripts and contain Python code, so they feel like source files
-#  but create a lot of distraction in the git log.
 *.manifest
 *.spec
 
@@ -55,21 +53,6 @@ pytestdebuglog.txt
 *.mo
 *.pot
 
-# Django stuff:
-# *.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
 
 # PyBuilder
 .pybuilder/
@@ -82,27 +65,7 @@ target/
 profile_default/
 ipython_config.py
 
-# pyenv
-#   For a library or binary, you wish to ignore their .python-version file.
-#   For a research project, you may wish to commit it.
-# .python-version
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work,
-#   or even fail to install.
-#Pipfile.lock
-
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   poetry.lock
-#   pyproject.toml is usually committed.
-
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#pdm.lock
-#   pdm build-backend/
 .pdm-python
 .pdm-build/
 
@@ -150,14 +113,19 @@ dmypy.json
 cython_debug/
 
 # PyCharm
-#  JetBrains IDEs: .idea/ (whole folder)
+#  JetBrains IDEs: .idea/ 
 .idea/
 idea/
-#datasets/
+
 # VS Code
 .vscode/
+
+
+# Project Specific
+
 datasets
 legacy
 working
 # Project Specific
 outputs/
+main_analysis.md

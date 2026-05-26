@@ -37,7 +37,7 @@ def _format_seconds(seconds: float | None) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
-class SOTAProgressBar(TQDMProgressBar):
+class RichProgressBar(TQDMProgressBar):
     """
     Rich local-terminal progress view.
     Maps long metric keys to concise research shorthand.
@@ -248,16 +248,16 @@ class MinimalProgressBar(Callback):
 
 def build_progress_bar(cfg: DictConfig) -> Callback:
     progress_cfg = cfg.get("train", {}).get("progress", {})
-    progress_type = str(progress_cfg.get("type", "sota")).strip().lower()
+    progress_type = str(progress_cfg.get("type", "rich")).strip().lower()
 
     if progress_type == "minimal":
         interval = progress_cfg.get("update_interval_seconds", 15.0)
         return MinimalProgressBar(update_interval_seconds=interval)
-    if progress_type == "sota":
+    if progress_type == "rich":
         refresh_rate = int(progress_cfg.get("refresh_rate", 1))
-        return SOTAProgressBar(refresh_rate=refresh_rate)
+        return RichProgressBar(refresh_rate=refresh_rate)
 
     raise ValueError(
         f"Unsupported train.progress.type='{progress_type}'. "
-        "Expected one of: 'sota', 'minimal'."
+        "Expected one of: 'rich', 'minimal'."
     )

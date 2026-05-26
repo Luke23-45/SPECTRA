@@ -1,20 +1,8 @@
 """
-Joint Spatial Transforms for NYUv2 Multi-Task Dense Prediction.
+Joint spatial transforms for NYUv2 dense prediction.
 
-All transforms apply identical spatial operations to image + all task labels
-to maintain pixel-level correspondence. This is CRITICAL — misaligned spatial
-transforms between tasks silently poison the training manifold.
-
-Design Decisions (verified against MTAN & LibMTL reference implementations):
-1. Interpolation: bilinear for image/normals, nearest for segmentation/depth
-2. Depth after scale-crop: divided by scale factor (metric depth preservation)
-3. Normal x-flip: only channel 0 negated (x-axis direction)
-4. All ops on (C, H, W) tensors (post np.moveaxis, matching MTAN convention)
-
-References:
-    - lorenmt/mtan (MTAN official): create_dataset.py
-    - median-research-group/LibMTL: examples/nyu/create_dataset.py
-    - PAD-Net (Liu et al. CVPR 2018)
+Each transform applies the same spatial operation to the image and all target
+maps so that pixel-level correspondence is preserved.
 """
 
 from __future__ import annotations
@@ -27,10 +15,6 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
 
-# =============================================================================
-# 1. RANDOM SCALE CROP (MTAN-Standard)
-# =============================================================================
-
 class RandomScaleCrop:
     """
     Multi-scale random crop for dense prediction augmentation.
@@ -38,12 +22,6 @@ class RandomScaleCrop:
     Randomly selects a scale factor, crops a correspondingly sized region,
     then resizes back to original dimensions. This simulates varying distance
     to the scene.
-
-    CRITICAL DEPTH LOGIC:
-        When scale > 1.0, we are "zooming in" — objects appear closer.
-        Depth values must be divided by scale to maintain metric consistency.
-        Example: scale=1.5 means we crop 1/1.5 of the image → objects are
-        1.5× closer → depth should be depth/1.5.
 
     Args:
         scales: List of allowed scale factors. Default [1.0, 1.2, 1.5]
@@ -73,18 +51,18 @@ class RandomScaleCrop:
         height, width = image.shape[-2:]
         sc = random.choice(self.scales)
 
-        # Fast path: scale=1.0 is a no-op, skip expensive interpolation
+        # Skip interpolation when scale is unchanged.
         if sc == 1.0:
             return image, label, depth, normal
 
-        # Crop region size (inverse of scale — larger scale = smaller crop)
+        # Larger scales correspond to smaller crop regions.
         h, w = int(height / sc), int(width / sc)
 
         # Random crop position
         i = random.randint(0, height - h)
         j = random.randint(0, width - w)
 
-        # --- Image: bilinear interpolation (smooth RGB sub-pixel values) ---
+        #  Image: bilinear interpolation (smooth RGB sub-pixel values) 
         image_crop = F.interpolate(
             image[None, :, i:i + h, j:j + w],
             size=(height, width),
@@ -92,16 +70,14 @@ class RandomScaleCrop:
             align_corners=True,
         ).squeeze(0)
 
-        # --- Segmentation: NEAREST interpolation (preserves class indices) ---
-        # label is (H,W) → add batch+channel dims for F.interpolate → remove them
+        # Nearest interpolation preserves segmentation class indices.
         label_crop = F.interpolate(
             label[None, None, i:i + h, j:j + w].float(),
             size=(height, width),
             mode='nearest',
         ).squeeze(0).squeeze(0).long()
 
-        # --- Depth: NEAREST interpolation (preserves metric values) ---
-        # CRITICAL: Divide by scale factor to maintain metric depth consistency
+        # Divide by the scale factor to preserve metric depth.
         depth_crop = F.interpolate(
             depth[None, :, i:i + h, j:j + w],
             size=(height, width),
@@ -109,7 +85,7 @@ class RandomScaleCrop:
         ).squeeze(0)
         depth_crop = depth_crop / sc  # Metric depth preservation
 
-        # --- Normals: bilinear interpolation (smooth directional field) ---
+        # Re-normalize normals after interpolation.
         normal_crop = F.interpolate(
             normal[None, :, i:i + h, j:j + w],
             size=(height, width),
@@ -117,7 +93,6 @@ class RandomScaleCrop:
             align_corners=True,
         ).squeeze(0)
 
-        # Re-normalize normals after bilinear interpolation (interpolation breaks unit length)
         mag = normal_crop.norm(dim=0, keepdim=True)
         mag = mag.clamp(min=1e-8)
         normal_crop = normal_crop / mag
@@ -125,20 +100,9 @@ class RandomScaleCrop:
         return image_crop, label_crop, depth_crop, normal_crop
 
 
-# =============================================================================
-# 2. RANDOM HORIZONTAL FLIP
-# =============================================================================
-
 class RandomHorizontalFlip:
     """
     Joint horizontal flip for all modalities.
-
-    CRITICAL NORMAL LOGIC:
-        Surface normals encode 3D direction (x, y, z).
-        Flipping the image horizontally mirrors the x-axis:
-        → normal[0] (x-component) must be negated
-        → normal[1] (y-component) stays the same
-        → normal[2] (z-component) stays the same
 
     Args:
         p: Probability of flip. Default 0.5 matches MTAN.
@@ -155,30 +119,25 @@ class RandomHorizontalFlip:
         normal: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if torch.rand(1).item() < self.p:
-            # Flip along width axis (dim=2 for (C,H,W), dim=1 for (H,W))
+            # Flip along the width axis.
             image = torch.flip(image, dims=[2])
             label = torch.flip(label, dims=[1])
             depth = torch.flip(depth, dims=[2])
             normal = torch.flip(normal, dims=[2])
 
-            # CRITICAL: Negate x-component of surface normals after spatial flip
-            # torch.flip returns a view — clone channel 0 before negating to avoid aliasing
+            # Negate the x-component of surface normals after the spatial flip.
             normal = normal.clone()
             normal[0, :, :] = -normal[0, :, :]
 
         return image, label, depth, normal
 
 
-# =============================================================================
-# 3. IMAGENET NORMALIZATION (Optional)
-# =============================================================================
-
 class ImageNetNormalize:
     """
     Standard ImageNet channel normalization.
 
     Only applied when using pretrained backbones (ResNet, SegNet pretrained).
-    MTAN baselines do NOT use this — they operate on raw [0, 255] float values.
+    MTAN baselines operate on raw [0, 255] float values.
 
     This is intentionally a separate class (not baked into the dataset) so
     ablation studies can toggle it cleanly.
@@ -202,9 +161,8 @@ class ImageNetNormalize:
         return TF.normalize(image, mean=self.MEAN, std=self.STD)
 
 
-# =============================================================================
 # 4. COMPOSED TRANSFORMS
-# =============================================================================
+
 
 class NYUv2TrainTransform:
     """
@@ -279,12 +237,12 @@ class NYUv2BatchTrainTransform:
         B, _, H, W = image.shape
         device = image.device
 
-        # --- 1. Per-sample random parameters (vectorized) ---
+        #  1. Per-sample random parameters (vectorized) 
         scale_idx = torch.randint(len(self.scales), (B,), device=device)
         scales_b = torch.tensor(self.scales, device=device, dtype=torch.float32)[scale_idx]  # (B,)
         flip_mask = torch.rand(B, device=device) < self.flip_p                              # (B,)
 
-        # --- 2. Crop geometry ---
+        #  2. Crop geometry 
         h_crop = (H / scales_b).long().clamp(max=H)       # (B,)
         w_crop = (W / scales_b).long().clamp(max=W)       # (B,)
 
@@ -293,7 +251,7 @@ class NYUv2BatchTrainTransform:
         i_off = (torch.rand(B, device=device) * (max_i + 1).float()).long().clamp(max=max_i)
         j_off = (torch.rand(B, device=device) * (max_j + 1).float()).long().clamp(max=max_j)
 
-        # --- 3. Build affine theta (B, 2, 3) ---
+        #  3. Build affine theta (B, 2, 3) 
         sx = w_crop.float() / W
         sy = h_crop.float() / H
         tx = (2.0 * j_off.float() + w_crop.float()) / W - 1.0
@@ -310,7 +268,7 @@ class NYUv2BatchTrainTransform:
             torch.stack([zeros, sy, ty], dim=1),
         ], dim=1)  # (B, 2, 3)
 
-        # --- 4. Batched grid_sample ---
+        #  4. Batched grid_sample 
         grid = F.affine_grid(theta, image.shape, align_corners=True)  # (B, H, W, 2)
 
         # Image: bilinear
@@ -335,7 +293,7 @@ class NYUv2BatchTrainTransform:
             flip_idx = flip_mask.nonzero(as_tuple=True)[0]
             normal[flip_idx, 0, :, :] = -normal[flip_idx, 0, :, :]
 
-        # --- 5. Write back ---
+        #  5. Write back 
         batch["input"] = image
         batch["targets"]["segmentation"] = label
         batch["targets"]["depth"] = depth

@@ -230,7 +230,7 @@ def process_patient(df_raw: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.nd
     unique_physio_measured = np.sum(np.any(raw_masks[:, non_static_indices] > 0, axis=0))
 
     if unique_physio_measured < 5:
-        raise ValueError(f"Ghost Patient: Only {unique_physio_measured} physiological vars measured")
+        raise ValueError(f"Insufficient physiological coverage: {unique_physio_measured} variables measured")
 
     hr_idx = RAW_COLUMNS.index("HR")
     if np.mean(raw_masks[:, hr_idx]) < 0.3:

@@ -1,6 +1,6 @@
 """SPECTRA learning rate scheduler factory.
 
-Provides cosine-with-warmup (SOTA for transformer training) and
+Provides cosine-with-warmup (Good for transformer training) and
 optional OneCycleLR wrapper.
 """
 
@@ -21,7 +21,7 @@ def get_cosine_schedule_with_warmup(
     """
     Linear warmup → Cosine decay → min_lr floor.
 
-    This is the SOTA choice for transformer / MTL training.
+    This is the choice for transformer / MTL training.
 
     Args:
         optimizer: PyTorch optimizer.

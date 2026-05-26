@@ -1,23 +1,8 @@
 """
-Canonical constants for the BPGS analysis framework.
+Shared constants for the BPGS analysis pipeline.
 
-This module is the **single source of truth** for:
-- Method display names, ordering, colors, and markers
-- Seed values
-- Metric direction registry (higher-is-better vs lower-is-better)
-- Study-specific path templates and dataset metadata
-
-Every table, figure, and statistical test imports from here to ensure
-consistency across the entire paper.
-
-Design notes
-------------
-* Colors are chosen from a colorblind-safe palette verified with the
-  Coblis Color Blindness Simulator (https://www.color-blindness.com/coblis/).
-* Method ordering follows the paper convention: baselines first
-  (alphabetical), then BPGS variants (canonical first, then alphabetical).
-* Metric directions are used by ``latex.bold_best_in_column`` and
-  ``metrics.compute_delta_m`` to correctly identify "best" values.
+The values here define method labels, plotting styles, seed values, metric
+directions, and study path templates used by the analysis scripts.
 """
 
 from __future__ import annotations
@@ -30,7 +15,7 @@ from typing import Dict, FrozenSet, List, Sequence, Tuple
 
 
 SEEDS: Tuple[int, ...] = (42, 43, 44)
-"""Canonical seed values used across all experiments."""
+"""Seed values used across the study suite."""
 
 N_SEEDS: int = len(SEEDS)
 
@@ -46,12 +31,12 @@ METHOD_DISPLAY: Dict[str, str] = OrderedDict([
     # BPGS variants
     ("bpgs",                "BPGS"),
     ("bpgs_canonical",      "BPGS (canonical)"),
-    ("bpgs_batch_aware_fixed", "BPGS (BA-fixed)"),
+    ("bpgs_batch_aware_fixed", "BPGS (BA-manual)"),
     ("bpgs_stateless_auto", "BPGS (SL-auto)"),
-    ("bpgs_stateless_fixed", "BPGS (SL-fixed)"),
+    ("bpgs_stateless_fixed", "BPGS (SL-manual)"),
 ])
 
-# Canonical ordering for tables/legends: baselines first, then BPGS family.
+# Ordering for tables and legends: baselines first, then the BPGS family.
 METHOD_ORDER: Tuple[str, ...] = (
     "static",
     "kendall",
@@ -77,7 +62,7 @@ METHOD_COLORS: Dict[str, str] = {
     "bpgs":                 "#EE3377",   # magenta-pink (hero)
     "bpgs_canonical":       "#EE3377",   # same hero
     "bpgs_batch_aware_fixed": "#EE7733", # tangerine
-    "bpgs_stateless_auto":  "#CCBB44",   # olive gold
+    "bpgs_stateless_auto":  "#CCBB44",   # olive
     "bpgs_stateless_fixed": "#44AA99",   # teal
 }
 
@@ -379,7 +364,7 @@ def display_name(method: str) -> str:
 
 
 def sort_methods(methods: Sequence[str]) -> List[str]:
-    """Sort methods according to the canonical ``METHOD_ORDER``.
+    """Sort methods according to ``METHOD_ORDER``.
 
     Methods not in ``METHOD_ORDER`` are appended at the end in their
     original order.

@@ -1,31 +1,8 @@
 """
-NYUv2 figures — curated, publication-grade (v3 — standard graph types).
+NYUv2 figure generation.
 
-Produces 5 figures:
-1. ``nyuv2_task_training_curves``:   1x3 panel line+band training curves per task.
-2. ``nyuv2_performance_comparison``: 1x3 grouped bar chart with error bars (final performance).
-3. ``nyuv2_relative_improvement``:   1x3 bar chart of % improvement over baseline.
-4. ``nyuv2_delta_m_comparison``:     Bar chart of Delta-M values per method.
-5. ``nyuv2_performance_heatmap``:    Annotated heatmap of all metrics x methods.
-
-Design rationale
-----------------
-These are the **standard figure types** used in top-tier ML conference
-papers (NeurIPS, ICML, ICLR) for multi-task learning method comparison:
-
-* **Grouped bar chart with error bars**: the most common figure in MTL
-  papers (MTAN, Auto-Lambda, Nash-MTL, CAGrad).  Directly shows final
-  performance with variance.  Replaces strip plot (sparse with n=3).
-* **Relative improvement bar chart**: standard in Nash-MTL, CAGrad, and
-  GradNorm papers.  Shows % change over baseline per task.  Replaces
-  Cleveland dot plot (unusual for ML).
-* **Delta-M bar chart**: the canonical multi-task improvement metric
-  used across MTL literature.  Replaces Friedman-Nemenyi CD diagram
-  (overkill for 4 methods).
-* **Annotated heatmap**: clean overview of all metrics x methods.
-  Standard in benchmark papers.  Replaces parallel coordinates
-  (unusual for ML, hard to read).
-* **Training curves** (kept): standard convergence dynamics figure.
+Produces task training curves, performance comparisons, relative-improvement
+plots, Delta-M summaries, and metric heatmaps.
 """
 
 from __future__ import annotations

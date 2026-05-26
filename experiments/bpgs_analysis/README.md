@@ -3,7 +3,7 @@
 This directory contains all BPGS (Batch-Projected Gradient Scaling) experiment data and analysis for the SPECTRA project. It is organized into two main subdirectories:
 
 - **`data/`** — Raw experiment outputs organized by category: **ablation**, **full-data regime checks**, **NYUv2 benchmark**, and **stress tests**.
-- **`analysis/`** — Publication-quality analysis pipeline (tables, figures, statistics) that reads from `data/`.
+- **`analysis/`** — Analysis pipeline for tables, figures, and statistics that reads from `data/`.
 
 Each experiment run follows a consistent output structure:
 
@@ -46,10 +46,10 @@ Stress-test runs additionally contain:
 Ablation study outputs testing BPGS variant configurations on the **NYUv2** dataset. Each variant is run with 3 seeds (42, 43, 44).
 
 - **`console_logs/`** — Captured console output (Markdown) from each ablation run:
-  - `bpgs_batch_aware_fixed.md` — BPGS with batch-aware fixed scaling
+  - `bpgs_batch_aware_fixed.md` — BPGS batch-aware manual-initialization variant
   - `bpgs_canonical.md` — Standard/canonical BPGS configuration
   - `bpgs_stateless_auto.md` — Stateless auto-scaling BPGS variant
-  - `bpgs_stateless_fixed.md` — Stateless fixed-scaling BPGS variant
+  - `bpgs_stateless_fixed.md` — Stateless manual-initialization BPGS variant
   - `kendall.md` — Kendall uncertainty weighting baseline
 
 - **`final_outputs/`** — Structured run outputs per method variant. Each method directory contains:
@@ -57,10 +57,10 @@ Ablation study outputs testing BPGS variant configurations on the **NYUv2** data
   - `studies/` — Mirrored output path with `run_training.log` files under the study hierarchy (`bpgs_study/01_nyuv2_ablation/<method>/seed_N/`)
 
   Methods present:
-  - `bpgs_batch_aware_fixed` — Batch-aware BPGS with fixed scaling
+  - `bpgs_batch_aware_fixed` — Batch-aware BPGS manual-initialization variant
   - `bpgs_canonical` — Canonical BPGS
   - `bpgs_stateless_auto` — Stateless BPGS with automatic scaling
-  - `bpgs_stateless_fixed` — Stateless BPGS with fixed scaling
+  - `bpgs_stateless_fixed` — Stateless BPGS manual-initialization variant
   - `kendall` — Kendall uncertainty weighting baseline
 
 - **`zip_versions/`** — Timestamped ZIP archives of ablation outputs (5 files, dated 2026-05-05)
@@ -127,9 +127,9 @@ Stress-test experiment outputs evaluating method robustness under extreme condit
 | Method | Description |
 |--------|-------------|
 | `bpgs` | Batch-Projected Gradient Scaling (canonical) |
-| `bpgs_batch_aware_fixed` | BPGS with batch-aware fixed scaling |
+| `bpgs_batch_aware_fixed` | BPGS batch-aware manual-initialization variant |
 | `bpgs_stateless_auto` | Stateless BPGS with automatic scaling |
-| `bpgs_stateless_fixed` | Stateless BPGS with fixed scaling |
+| `bpgs_stateless_fixed` | Stateless BPGS manual-initialization variant |
 | `kendall` | Kendall uncertainty weighting |
 | `gradnorm_proxy` | GradNorm proxy gradient normalization |
 | `pcgrad` | Projecting Conflicting Gradients |

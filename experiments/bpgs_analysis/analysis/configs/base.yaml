@@ -1,9 +1,5 @@
-# ═══════════════════════════════════════════════════════════════════════
-# BPGS Analysis Framework — Base Configuration
-# ═══════════════════════════════════════════════════════════════════════
-#
-# Single source of truth for ALL data paths, experiment metadata,
-# and analysis settings.
+# BPGS analysis configuration.
+# Shared data paths, experiment metadata, and analysis settings.
 #
 # Path resolution:
 #   ${paths.data_root} resolves to the absolute path of bpgs_experiment/data/

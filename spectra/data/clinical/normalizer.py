@@ -1,61 +1,9 @@
 """
-Physics-Aware Clinical Normalization Engine.
+Clinical time-series normalization utilities.
 
-Status: SAFETY-CRITICAL / PRODUCTION-READY
-Purpose: Transforms raw clinical vitals into neural-network-friendly representations
-         while preserving physiological meaning and enabling accurate denormalization.
-
-"In clinical AI, normalization is not just preprocessing—it's the bridge between
-raw sensor readings and life-saving predictions. Every decimal matters."
-
-This module implements a comprehensive normalization pipeline specifically designed
-for ICU time-series data in sepsis prediction:
-
-1.  **Physics Gating**: Enforces biological "hard decks"—values outside these bounds
-    are impossible (sensor artifacts) and are clamped to prevent outlier corruption.
-
-2.  **Log-Normal Handling**: Variables like Lactate, Bilirubin, and Creatinine are
-    log-normally distributed. Linear scaling destroys the gradient signal in the
-    critical "healthy-to-sick" transition range (e.g., Lactate 0.5→2.0).
-    We apply Log1p transform BEFORE statistical normalization for these channels.
-
-3.  **Reversible Instance Normalization (RevIN)**: SOTA technique from Kim et al.
-    (2021) for handling distribution shift in time series. Optional per-patient
-    normalization that removes and restores instance-specific statistics.
-
-4.  **Robust Quantile Scaling**: Uses P01/P99 (or P05/P95) instead of Min/Max to
-    compress outliers while preserving the bulk of the distribution.
-
-5.  **FP16 Safety**: High epsilon (1e-3) prevents underflow/division-by-zero in
-    mixed-precision training.
-
-6.  **NaN Trapping**: Explicit recovery from NaN inputs (last line of defense).
-
-7.  **Complete Reversibility**: Accurate denormalization for interpretability.
-
-Additional Features:
-1.  **Unified Log-Space + Linear**: Conditional log transform per channel with
-    proper calibration-time and runtime alignment.
-2.  **Reversible Per-Patient Normalization**: Optional RevIN-style instance norm
-    with stored statistics for accurate denormalization.
-3.  **Physics-Informed Bounds**: Derived from Sepsis-3 consensus and PhysioNet stats.
-4.  **Missingness Mask Support**: Optional integration with imputation uncertainty.
-5.  **Calibration Validation**: Schema enforcement to prevent column-swapping bugs.
-6.  **Sanity Checking**: Runtime validation that outputs are in valid range.
-7.  **Static Context Handling**: Separate normalization path for demographic features.
-8.  **Comprehensive Logging**: Detailed calibration and runtime status reporting.
-9.  **Batch and Instance Modes**: Supports both global quantile and per-patient norm.
-
-References:
-    - Singer et al. "Sepsis-3 Consensus Definitions" (JAMA 2016)
-    - PhysioNet Challenge 2019 Data Analysis
-    - Kim et al. "Reversible Instance Normalization for Accurate Time-Series Forecasting" (ICLR 2022)
-    - Surviving Sepsis Campaign Guidelines (2021 Update)
-
-Dependencies:
-    - torch (PyTorch)
-    - json (For stats file parsing)
-    - pathlib (For cross-platform paths)
+The normalizer calibrates from prepared dataset statistics, applies channel-wise
+bounds, supports log-space handling for selected laboratory measurements, and
+can invert normalized values for inspection.
 """
 
 from __future__ import annotations
@@ -68,21 +16,10 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List, Union, Any
 
-# Logger Configuration
 logger = logging.getLogger("spectra.data.clinical.normalizer")
 logger.setLevel(logging.INFO)
 
-# =============================================================================
-# 1. BIOLOGICAL PHYSICS CONSTANTS (VERIFIED CLINICAL SOURCES)
-# =============================================================================
-# Bounds are derived from:
-# 1. "Sepsis-3 Definition" (Singer et al., JAMA 2016)
-# 2. "PhysioNet Challenge 2019" Data Distribution Analysis
-# 3. Clinical Reality: Values outside these ranges are incompatible with life
-#    or represent sensor disconnection/malfunction.
-# 4. Surviving Sepsis Campaign Guidelines (2021 Update)
-
-# Physics Bounds (Prevents Denormalizer Out-of-Bounds Exceptions)
+# Bounds used before statistical normalization and denormalization.
 PHYSICS_BOUNDS_TS: Dict[str, Tuple[float, float]] = {
     'HR': (30.0, 180.0), 'O2Sat': (50.0, 100.0), 'SBP': (50.0, 220.0),
     'DBP': (30.0, 120.0), 'MAP': (40.0, 150.0), 'Resp': (8.0, 45.0), 'Temp': (32.0, 41.0),
@@ -95,20 +32,12 @@ PHYSICS_BOUNDS_TS: Dict[str, Tuple[float, float]] = {
     'Unit2': (0.0, 1.0), 'HospAdmTime': (-1000.0, 0.0), 'ICULOS': (0.0, 2000.0)
 }
 
-# =============================================================================
-# LOG-SPACE CHANNELS (Heavy-Tailed Labs)
-# =============================================================================
-# These channels require Log-Space transformation BEFORE normalization.
-# This fixes the "vanishing gradient" problem for clinical transitions (e.g., 0.5→2.0)
+# Channels transformed with log1p before statistical normalization.
 LOG_SPACE_CHANNELS = {
     'Lactate', 'Creatinine', 'Bilirubin', 'WBC', 'BUN', 'Glucose', 'Platelets'
 }
 
-# =============================================================================
-# CANONICAL COLUMN ORDER (MUST MATCH DATASET.PY!)
-# =============================================================================
-# This is the authoritative "Clinical 28" specification.
-# Any deviation will cause silent column-swapping bugs.
+# This order must match `CANONICAL_COLUMNS` in `spectra.data.clinical.dataset`.
 CANONICAL_COLUMNS = [
     'HR', 'O2Sat', 'SBP', 'DBP', 'MAP', 'Resp', 'Temp',
     'Lactate', 'Creatinine', 'Bilirubin', 'Platelets', 'WBC',
@@ -119,23 +48,7 @@ CANONICAL_COLUMNS = [
 
 
 class ClinicalNormalizer(nn.Module):
-    """
-    Life-Critical Normalization Module for ICU Time Series.
-    
-    Implements a comprehensive pipeline:
-    1. NaN Recovery → 2. Physics Clamp → 3. Log Transform → 4. Robust Scaling → 5. Latent Clamp
-    
-    Supports both global quantile normalization and per-patient instance normalization.
-    All transformations are reversible for interpretability.
-    
-    Attributes:
-        ts_channels: Number of time-series channels (default: 28 for Clinical 28)
-        static_channels: Number of static/demographic channels (default: 6)
-        safety_margin: Percentage margin beyond quantile bounds (default: 5%)
-        epsilon: Numerical stability constant (default: 1e-3 for FP16)
-        use_per_patient: Enable RevIN-style per-patient normalization
-        normalize_mode: Either 'global_quantile' or 'per_patient'
-    """
+    """Normalize and denormalize clinical time-series tensors."""
     
     def __init__(
         self, 
@@ -154,7 +67,7 @@ class ClinicalNormalizer(nn.Module):
         self.use_per_patient = use_per_patient
         self.store_instance_stats = store_instance_stats
         
-                # PERSISTENT BUFFERS (Saved with Model Checkpoint)
+        # PERSISTENT BUFFERS (Saved with Model Checkpoint)
                 
         # 1. Physics Bounds (Biological Hard Decks)
         self.register_buffer('ts_physics_min', torch.zeros(ts_channels))
@@ -205,12 +118,9 @@ class ClinicalNormalizer(nn.Module):
         """
         path = Path(stats_path)
         if not path.exists():
-            raise FileNotFoundError(f"[CRITICAL] Stats file not found: {path}")
+            raise FileNotFoundError(f"Stats file not found: {path}")
 
-                # 1. SCHEMA VALIDATION (Critical Safety Check)
-                # [FIX] Robust Alias Mapping (Apply BEFORE validation)
         # PhysioNet and some subsets use 'Bilirubin_total', we use 'Bilirubin'.
-        # We must normalize these names before the strict canonical check.
         sanitized_names = []
         for name in channel_names_ts:
             if name == "Bilirubin_total":
@@ -222,14 +132,12 @@ class ClinicalNormalizer(nn.Module):
 
         if len(channel_names_ts) != self.ts_channels:
             raise ValueError(
-                f"[CRITICAL] Channel count mismatch: "
+                f"Channel count mismatch: "
                 f"Config={self.ts_channels}, Input={len(channel_names_ts)}"
             )
         
-        # Verify order matches canonical to prevent silent column-swapping
         if channel_names_ts != CANONICAL_COLUMNS:
-            logger.error("[CRITICAL] Input channel order does not match CANONICAL spec!")
-            # [Debug] Show the first mismatch
+            logger.error("[NORMALIZER] Input channel order does not match configured clinical columns.")
             for i, (exp, act) in enumerate(zip(CANONICAL_COLUMNS, channel_names_ts)):
                 if exp != act:
                     logger.error(f"  Mismatch at index {i}: Expected '{exp}', Got '{act}'")
@@ -242,28 +150,21 @@ class ClinicalNormalizer(nn.Module):
             with open(path, 'r') as f:
                 data = json.load(f)
             
-            # Support both nested and flat JSON structures
             stats = data.get("metadata", {}).get("stats", {}) or data.get("stats", {})
             if not stats:
                 raise ValueError("JSON file contains no 'stats' block.")
 
-            # =================================================================
-            # 2. SETUP PHYSICS BOUNDS & LOG MASK
-            # =================================================================
             p_min_list, p_max_list, log_list = [], [], []
             
             for i, name in enumerate(channel_names_ts):
-                # [FIX] Robust Mapping for Feature Aliases
                 if name == "Bilirubin_total":
                     name = "Bilirubin"
                     logger.warning("[NORMALIZER] Remapped 'Bilirubin_total' -> 'Bilirubin' for Log1p check.")
 
-                # Physics bounds from clinical knowledge
                 bounds = PHYSICS_BOUNDS_TS.get(name, (-1000.0, 1000.0))
                 p_min_list.append(bounds[0])
                 p_max_list.append(bounds[1])
                 
-                # Log transform flag
                 is_log = name in LOG_SPACE_CHANNELS
                 log_list.append(is_log)
                 if is_log:
@@ -273,10 +174,6 @@ class ClinicalNormalizer(nn.Module):
             self.ts_physics_max.copy_(torch.tensor(p_max_list, dtype=torch.float32))
             self.log_mask.copy_(torch.tensor(log_list, dtype=torch.bool))
 
-            # =================================================================
-            # 3. LOAD STATISTICAL BOUNDS (Robust Quantiles Preferred)
-            # =================================================================
-            # Priority: P01/P99 > P05/P95 > Min/Max
             raw_min = (
                 stats.get("ts_p01") or 
                 stats.get("ts_quantile_01") or 
@@ -290,7 +187,6 @@ class ClinicalNormalizer(nn.Module):
             
             mode = "robust_quantile"
             
-            # Fallback to Min/Max (sensitive to outliers)
             if raw_min is None or raw_max is None:
                 logger.warning("[NORMALIZER] Quantiles not found. Falling back to Min/Max (outlier risk!).")
                 raw_min = stats.get("ts_min")
@@ -300,32 +196,17 @@ class ClinicalNormalizer(nn.Module):
             if raw_min is None or raw_max is None:
                 raise ValueError("Stats file missing both quantiles and min/max values.")
 
-            # [FIX] Device Safety: Ensure stats are on same device as physics bounds
-            # self.ts_physics_min is a buffer, so it follows the model device (CPU/GPU)
             device = self.ts_physics_min.device
             t_min = torch.tensor(raw_min, dtype=torch.float32, device=device)
             t_max = torch.tensor(raw_max, dtype=torch.float32, device=device)
-            # =================================================================
-            # 4. CLAMP STATS TO PHYSICS BOUNDS
-            # =================================================================
-            # Ensure statistical bounds don't exceed biological limits
             t_min = torch.max(t_min, self.ts_physics_min)
             t_max = torch.min(t_max, self.ts_physics_max)
 
-            # =================================================================
-            # 5. APPLY LOG TRANSFORM TO STATS (Alignment!)
-            # =================================================================
-            # Relu guard prevents RuntimeWarnings on negative linear channels 
-            # (e.g., HospAdmTime) during torch.where dual-evaluation.
             t_min_processed = torch.where(self.log_mask, torch.log1p(torch.relu(t_min)), t_min)
             t_max_processed = torch.where(self.log_mask, torch.log1p(torch.relu(t_max)), t_max)
 
-            # =================================================================
-            # 6. CALCULATE FINAL RANGE WITH SAFETY MARGIN
-            # =================================================================
             data_range = (t_max_processed - t_min_processed)
             
-            # Epsilon protection for constant/near-constant columns
             data_range = torch.where(
                 data_range < self.epsilon, 
                 torch.ones_like(data_range), 
@@ -340,11 +221,7 @@ class ClinicalNormalizer(nn.Module):
             self.ts_stat_min.copy_(final_min)
             self.ts_stat_max.copy_(final_max)
 
-            # =================================================================
-            # 7. STATIC CONTEXT SETUP
-            # =================================================================
             if self.static_channels > 0:
-                # Static features are the last N channels of canonical set
                 self.static_min.copy_(self.ts_stat_min[-self.static_channels:])
                 self.static_max.copy_(self.ts_stat_max[-self.static_channels:])
 
@@ -370,7 +247,7 @@ class ClinicalNormalizer(nn.Module):
         max_b: torch.Tensor
     ) -> torch.Tensor:
         """
-        Robust normalization primitive: [min, max] → [-1, 1].
+        Normalization primitive: [min, max] → [-1, 1].
         
         Formula: x_norm = 2 * (x - min) / (max - min) - 1
         
@@ -428,70 +305,35 @@ class ClinicalNormalizer(nn.Module):
         x_static: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        The Safe Forward Pass (Normalization).
-        
-        Pipeline:
-        1. NaN Recovery → 2. Physics Clamp → 3. Log Transform → 
-        4. Robust Scaling → 5. Latent Clamp
-        
-        Args:
-            x_ts: Time series tensor (B, T, C) or (B, C)
-            x_static: Optional static context tensor (B, C_static)
-            mask: Optional missingness mask (B, T, C) where 1=observed, 0=missing
-        
-        Returns:
-            Tuple of (x_ts_norm, x_static_norm) both in [-1, 1] range
-        """
+        """Normalize time-series and optional static tensors."""
         if not self.is_calibrated:
-            # Pass-through mode during early debugging/init
             return x_ts, x_static
 
-                # 0. INPUT SAFETY: NaN Recovery
-                # This is the last line of defense. Imputation should happen upstream.
         if torch.isnan(x_ts).any() or torch.isinf(x_ts).any():
             logger.warning("[NORMALIZER] NaN/Inf detected in input! Applying robust recovery.")
             x_ts = torch.nan_to_num(x_ts, nan=0.0, posinf=1.0, neginf=-1.0)
 
-                # 1. PREPARE BROADCASTING
-                p_min, p_max, s_min, s_max, l_mask = self._prepare_broadcast(x_ts)
+        p_min, p_max, s_min, s_max, l_mask = self._prepare_broadcast(x_ts)
 
-                # 2. PHYSICS CLAMP (Biological Grounding)
-                # "Is this value biologically possible?"
         x_phy = torch.clamp(x_ts, p_min, p_max)
         
-                # 3. CONDITIONAL LOG TRANSFORMATION
-                # For heavy-tailed lab values (Lactate, Bilirubin, etc.)
-        # log1p(x) is safe because physics bounds ensure x > 0 for log channels
-        x_log = torch.log1p(torch.relu(x_phy))  # relu protects against tiny negatives
+        x_log = torch.log1p(torch.relu(x_phy))
         x_processed = torch.where(l_mask, x_log, x_phy)
         
-                # 4. NORMALIZATION (Global Quantile or Per-Patient)
-                if self.use_per_patient:
-            # RevIN-style per-patient instance normalization
+        if self.use_per_patient:
             x_norm = self._per_patient_normalize(x_processed)
         else:
-            # Standard global quantile normalization
-            # Leaky clinical clipping
-            # Replace hard clamp with a 'Linear Extension' that preserves gradients.
-            # This is critical for crisis scenarios (HR > P99) which were previously blinded.
             x_norm = self._safe_normalize(x_processed, s_min, s_max)
-            # Apply 0.1x slope for values beyond statistical bounds
             x_norm = torch.where(x_norm > 1.0, 1.0 + (x_norm - 1.0) * 0.1, x_norm)
             x_norm = torch.where(x_norm < -1.0, -1.0 + (x_norm + 1.0) * 0.1, x_norm)
 
-                # 5. LATENT SPACE CLAMP (Neural Stability)
-                # Physiological headroom: expand latent range to [-2.0, 2.0]
-        # This prevents saturation in the downstream Transformer while keeping values manageable.
         x_ts_norm = torch.clamp(x_norm, -2.0, 2.0)
 
-                # 6. STATIC CONTEXT HANDLING
-                x_static_norm = None
+        x_static_norm = None
         if x_static is not None:
             st_min = self.static_min.to(x_static.device).view(1, -1)
             st_max = self.static_max.to(x_static.device).view(1, -1)
             
-            # Static vars don't need log transform (Age, Gender, Unit, etc.)
             x_st_clamped = torch.clamp(x_static, st_min, st_max)
             x_static_norm = self._safe_normalize(x_st_clamped, st_min, st_max)
             x_static_norm = torch.clamp(x_static_norm, -1.0, 1.0)
@@ -555,61 +397,33 @@ class ClinicalNormalizer(nn.Module):
         return self.forward(x_ts, x_static, mask)
 
     def denormalize(self, x_ts_norm: torch.Tensor) -> torch.Tensor:
-        """
-        Inverts the normalization pipeline for interpretability.
-        
-        Pipeline: [-1,1] → Unscale → Inverse Log (if applicable) → Physical Units
-        
-        Args:
-            x_ts_norm: Normalized tensor in [-1, 1] range
-        
-        Returns:
-            Tensor in original clinical units (mmHg, mmol/L, etc.)
-        """
+        """Invert global or per-patient normalization."""
         if not self.is_calibrated:
             return x_ts_norm
 
-        # Handle per-patient mode
         if self.use_per_patient:
             return self._per_patient_denormalize(x_ts_norm)
 
-                # GLOBAL DENORMALIZATION
-                rank = len(x_ts_norm.shape)
+        rank = len(x_ts_norm.shape)
         view_shape = [1] * (rank - 1) + [-1]
         
         s_min = self.ts_stat_min.to(x_ts_norm.device).view(view_shape)
         s_max = self.ts_stat_max.to(x_ts_norm.device).view(view_shape)
         l_mask = self.log_mask.to(x_ts_norm.device).view(view_shape)
         
-        # 1. Inverse linear scaling: [-1, 1] → [0, 1]
         x_01 = (x_ts_norm + 1.0) / 2.0
-        # Check for numeric instability near boundaries
         x_01 = torch.clamp(x_01, 0.0, 1.0) 
         
-        # 2. Scale back to statistical range
         x_scaled = x_01 * (s_max - s_min) + s_min
         
-        # 3. FP16 Hard Math Protection
-        # max FP16 is 65504. log(65500) = 11.08.
-        # LOG_GUARD MUST be <= 11.0 to prevent NaN explosions in long training runs.
         LOG_GUARD = 11.0 
         LINEAR_GUARD = 5000.0
         
-        # Note: x_scaled IS the value we want to operate on. 
-        # For log channels, x_scaled is in log-space (e.g., log(100) = 4.6).
-        # We process log and linear separately to avoid confusion.
-        
-        # Linear Path:
-        # Just clamp to avoid INF if something went wrong
         x_linear_final = torch.clamp(x_scaled, -LINEAR_GUARD, LINEAR_GUARD)
         
-        # Log Path:
-        # x_scaled is ln(1+x). So x = exp(x_scaled) - 1.
-        # We must guard x_scaled before exp.
         x_log_input = torch.clamp(x_scaled, -LOG_GUARD, LOG_GUARD)
         x_log_final = torch.expm1(x_log_input)
         
-        # 4. Select based on mask
         x_final = torch.where(l_mask, x_log_final, x_linear_final)
         
         return x_final
@@ -707,9 +521,9 @@ class ClinicalNormalizer(nn.Module):
         )
 
 
-# =============================================================================
+
 # VERIFICATION BLOCK
-# =============================================================================
+
 if __name__ == "__main__":
     import logging
     logging.basicConfig(level=logging.INFO)

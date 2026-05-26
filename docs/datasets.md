@@ -49,7 +49,7 @@ The NYUv2 path in this repository is a three-task dense prediction benchmark wit
 
 What the repository does:
 
-- `spectra/data/nyuv2/nyuv2_lmdb_sota.py` downloads `tanganke/nyuv2` with `datasets.load_dataset(..., streaming=True)`.
+- `spectra/data/nyuv2/nyuv2_lmdb_builder.py` downloads `tanganke/nyuv2` with `datasets.load_dataset(..., streaming=True)`.
 - The pipeline writes per-split LMDB files and JSON index manifests under `datasets/nyuv2_lmdb/`.
 - `spectra/data/nyuv2/dataset.py` reads the LMDB materialization and exposes three targets:
   - segmentation
@@ -67,7 +67,7 @@ Files that define this path:
 
 - `configs/dataset/nyuv2.yaml`
 - `scripts/data/nyuv2_generate.py`
-- `spectra/data/nyuv2/nyuv2_lmdb_sota.py`
+- `spectra/data/nyuv2/nyuv2_lmdb_builder.py`
 - `spectra/data/nyuv2/dataset.py`
 - `spectra/data/datamodule.py`
 
@@ -170,7 +170,7 @@ python scripts/data/qm9_generate.py
 
 The underlying implementations live in:
 
-- `spectra/data/nyuv2/nyuv2_lmdb_sota.py`
+- `spectra/data/nyuv2/nyuv2_lmdb_builder.py`
 - `spectra/data/yeast/ingest.py`
 - `spectra/data/rf1/ingest.py`
 - `spectra/data/qm9/ingest.py`

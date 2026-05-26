@@ -1,6 +1,6 @@
 from .dataset import (
     ICUTrajectoryDataset, 
-    ICUSotaDataset, 
+    ICUDataset,
     robust_collate_fn, 
     ensure_data_ready,
     CANONICAL_COLUMNS,
@@ -14,7 +14,7 @@ FEATURE_NAMES = CANONICAL_COLUMNS
 
 __all__ = [
     "ICUTrajectoryDataset",
-    "ICUSotaDataset",
+    "ICUDataset",
     "robust_collate_fn",
     "ensure_data_ready",
     "ClinicalNormalizer",

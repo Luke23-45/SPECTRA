@@ -106,7 +106,7 @@ python scripts/data/qm9_generate.py
 
 The preparation code is defined in:
 
-- `spectra/data/nyuv2/nyuv2_lmdb_sota.py`
+- `spectra/data/nyuv2/nyuv2_lmdb_builder.py`
 - `spectra/data/yeast/ingest.py`
 - `spectra/data/rf1/ingest.py`
 - `spectra/data/qm9/ingest.py`

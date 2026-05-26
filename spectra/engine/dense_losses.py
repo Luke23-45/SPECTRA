@@ -137,9 +137,7 @@ class DenseCosineLoss(nn.Module):
         return loss
 
 
-# =============================================================================
 # STANDALONE VERIFICATION
-# =============================================================================
 
 if __name__ == "__main__":
     print("=" * 60)
@@ -148,7 +146,7 @@ if __name__ == "__main__":
 
     B, H, W = 2, 32, 32
 
-    # --- MaskedL1Loss ---
+    #  MaskedL1Loss 
     print("\n[MaskedL1Loss]")
     masked_l1 = MaskedL1Loss()
 
@@ -169,7 +167,7 @@ if __name__ == "__main__":
     assert loss_zero.item() == 0.0, f"Expected 0.0 loss for all-masked, got {loss_zero.item()}"
     print("  ✓ All-masked → loss=0")
 
-    # --- DenseCosineLoss ---
+    #  DenseCosineLoss 
     print("\n[DenseCosineLoss]")
     cosine_loss = DenseCosineLoss()
 

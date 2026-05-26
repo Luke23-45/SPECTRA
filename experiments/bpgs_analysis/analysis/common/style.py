@@ -1,22 +1,4 @@
-"""
-Publication-grade matplotlib style system for NeurIPS 2026.
-
-Design principles
------------------
-* **Premium feel**: generous whitespace, refined typography, subtle grid.
-* **Colorblind-safe**: palette verified with Coblis & Viz Palette tools.
-* **NeurIPS-compliant**: Type-42 fonts, serif family (Times), correct sizes.
-* **Consistent**: every figure uses the same design tokens.
-
-Usage::
-
-    from analysis.common.style import apply_neurips_style, create_figure, save_figure
-
-    with apply_neurips_style():
-        fig, ax = create_figure(width="single")
-        ...
-        save_figure(fig, Path("output/my_figure"))
-"""
+"""Matplotlib style helpers for analysis figures."""
 
 from __future__ import annotations
 
@@ -39,7 +21,7 @@ _TEXT_WIDTH  = 6.875    # full text width (double column)
 # DPI for raster outputs
 _DPI = 300
 
-# Font sizes (pt) — NeurIPS caption is 9pt, body 10pt
+# Font sizes in points.
 _FONT_SIZE_TITLE  = 10
 _FONT_SIZE_LABEL  = 9
 _FONT_SIZE_TICK   = 7.5
@@ -47,24 +29,22 @@ _FONT_SIZE_LEGEND = 7
 _FONT_SIZE_ANNOT  = 6.5
 
 
-# Colorblind-safe palette (Tol + Wong, verified with Coblis simulator)
+# Colorblind-safe palette.
 PALETTE = {
-    # Baselines — cool, muted tones
     "static":               "#88CCEE",   # sky blue
     "kendall":              "#332288",   # indigo
     "uwso":                 "#117733",   # forest green
     "pcgrad":               "#882255",   # wine
     "gradnorm_proxy":       "#CC6677",   # rose
 
-    # BPGS family — warm, prominent tones
-    "bpgs":                 "#EE3377",   # magenta-pink (hero color)
-    "bpgs_canonical":       "#EE3377",   # same hero
+    "bpgs":                 "#EE3377",   # magenta-pink
+    "bpgs_canonical":       "#EE3377",
     "bpgs_batch_aware_fixed": "#EE7733", # tangerine
-    "bpgs_stateless_auto":  "#CCBB44",   # olive gold
+    "bpgs_stateless_auto":  "#CCBB44",   # olive
     "bpgs_stateless_fixed": "#44AA99",   # teal
 }
 
-# Marker styles — distinct, not too large
+# Marker styles for method plots.
 MARKERS = {
     "static":               "s",    # square
     "kendall":              "^",    # triangle up
