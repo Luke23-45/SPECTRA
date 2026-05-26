@@ -250,7 +250,7 @@ def main() -> int:
         print("\nExperiment interrupted by user")
         return_code = 130
         return 130
-    except Exception as exc:
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
         status = f"crashed ({type(exc).__name__})"
         print(f"Error running experiment: {exc}")
         return_code = 1

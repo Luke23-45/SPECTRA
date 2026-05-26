@@ -17,6 +17,15 @@ from spectra.data.clinical.dataset import ICUTrajectoryDataset, ICUDataset, crea
 
 logger = logging.getLogger("spectra.datamodule")
 
+COLLATE_REGISTRY = {
+    "nyuv2": NYUv2Dataset.collate_fn,
+    "rf1": RF1Dataset.collate_fn,
+    "yeast": YeastDataset.collate_fn,
+    "qm9": QM9Dataset.collate_fn,
+    "synthetic": SyntheticMTLDataset.collate_fn,
+    "clinical": robust_collate_fn,
+}
+
 
 def _cfg_lookup(cfg: DictConfig, key: str, default=None):
     """Resolve top-level and nested dataset keys without dropping falsey values."""
@@ -40,13 +49,7 @@ def _loader_kwargs(dataset_name: str, num_workers: int, cfg: DictConfig) -> Dict
         return kwargs
 
     prefetch = cfg.train.get("prefetch_factor", None)
-    if prefetch is None and dataset_name == "nyuv2":
-        prefetch = 4
-    if prefetch is None and dataset_name == "rf1":
-        prefetch = 4
-    if prefetch is None and dataset_name == "yeast":
-        prefetch = 4
-    if prefetch is None and dataset_name == "qm9":
+    if prefetch is None and dataset_name in {"nyuv2", "rf1", "yeast", "qm9"}:
         prefetch = 4
     if prefetch is not None:
         kwargs["prefetch_factor"] = int(prefetch)
@@ -337,17 +340,7 @@ class SPECTRADataModule(pl.LightningDataModule):
         # Others (Vision/Synthetic)
         sampler = None
             
-        collate_fn = None
-        if self.dataset_name == "nyuv2":
-            collate_fn = NYUv2Dataset.collate_fn
-        elif self.dataset_name == "rf1":
-            collate_fn = RF1Dataset.collate_fn
-        elif self.dataset_name == "yeast":
-            collate_fn = YeastDataset.collate_fn
-        elif self.dataset_name == "qm9":
-            collate_fn = QM9Dataset.collate_fn
-        elif self.dataset_name == "synthetic":
-            collate_fn = SyntheticMTLDataset.collate_fn
+        collate_fn = COLLATE_REGISTRY.get(self.dataset_name)
 
         return DataLoader(
             self.train_ds,
@@ -365,19 +358,7 @@ class SPECTRADataModule(pl.LightningDataModule):
         num_workers = _resolve_num_workers(self.cfg)
         loader_kwargs = _loader_kwargs(self.dataset_name, num_workers, self.cfg)
         loader_generator = _make_loader_generator(int(self.cfg.get("seed", 42)) + 1)
-        collate_fn = None
-        if self.dataset_name == "nyuv2":
-            collate_fn = NYUv2Dataset.collate_fn
-        elif self.dataset_name == "rf1":
-            collate_fn = RF1Dataset.collate_fn
-        elif self.dataset_name == "yeast":
-            collate_fn = YeastDataset.collate_fn
-        elif self.dataset_name == "qm9":
-            collate_fn = QM9Dataset.collate_fn
-        elif self.dataset_name == "clinical":
-            collate_fn = robust_collate_fn
-        elif self.dataset_name == "synthetic":
-            collate_fn = SyntheticMTLDataset.collate_fn
+        collate_fn = COLLATE_REGISTRY.get(self.dataset_name)
 
         return DataLoader(
             self.val_ds,

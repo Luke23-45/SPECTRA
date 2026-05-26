@@ -20,7 +20,7 @@ def _safe_float(value: Any) -> float | None:
     if hasattr(value, "item"):
         try:
             value = value.item()
-        except Exception:
+        except (RuntimeError, ValueError):
             return None
     try:
         return float(value)

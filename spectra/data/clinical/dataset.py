@@ -95,7 +95,7 @@ def ensure_data_ready(
             )
             logger.info("[Tier 1] Download completed.")
             return
-        except Exception as e:
+        except (OSError, ValueError, ImportError) as e:
             logger.warning(f"[Tier 1] HF download failed: {e}. Falling back to local build.")
 
     logger.info("[Tier 2] Building clinical data from raw sources...")
@@ -163,8 +163,8 @@ class ICUTrajectoryDataset(Dataset):
                     n_subset = max(1, int(n_total * subset_pct))
                     logger.info(f"[{split.upper()}] Piloting Mode: Subsetting to {subset_pct*100:.1f}% ({n_subset}/{n_total} episodes)")
                     self.episode_metadata = self.episode_metadata[:n_subset]
-        except Exception as e:
-            raise RuntimeError(f"Corrupted Index JSON: {e}")
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            raise RuntimeError(f"Corrupted Index JSON: {e}") from e
 
         if validate_schema:
             ts_cols = self.metadata.get("ts_columns") or self.metadata.get("columns", [])
@@ -409,7 +409,7 @@ class ICUDataset(ICUTrajectoryDataset):
 
             return sample
 
-        except Exception as e:
+        except (KeyError, ValueError, IndexError, OSError) as e:
             logger.error(f"FATAL Load Error at idx {idx}: {e}", exc_info=False)
             return None
 
@@ -528,7 +528,7 @@ def create_sepsis_aware_sampler(
                 return create_sepsis_aware_sampler(
                     dataset, sepsis_boost_factor, max_samples, seed, target
                 )
-        except Exception as e:
+        except (OSError, ValueError) as e:
             if rank == 0:
                 logger.warning(f"[Sampler] Corrupt index detected, rebuilding: {e}")
                 if index_path.exists(): index_path.unlink()
@@ -577,7 +577,7 @@ def create_sepsis_aware_sampler(
                 np.save(temp_path, is_sepsis)
                 temp_path.replace(index_path)
                 logger.info(f"[Sampler] Sepsis Index saved atomically to {index_path}")
-            except Exception as e:
+            except OSError as e:
                 logger.warning(f"[Sampler] Could not save Sepsis Index: {e}")
             
     weights[is_sepsis] = sepsis_boost_factor

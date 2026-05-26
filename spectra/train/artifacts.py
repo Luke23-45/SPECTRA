@@ -20,7 +20,7 @@ import torch
 def _original_cwd() -> Path:
     try:
         return Path(get_original_cwd())
-    except Exception:
+    except (ValueError, RuntimeError):
         return Path.cwd()
 
 

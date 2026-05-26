@@ -95,7 +95,7 @@ class GradientHealthCallback(pl.Callback):
                                     lrs.append(pg["lr"])
                     if lrs:
                         current_lr = sum(lrs) / len(lrs)
-            except Exception as e:
+            except (RuntimeError, TypeError, AttributeError):
                 pass # Silently fallback to 1e-3 if extraction fails
 
             true_update_ratio = mean_grad_weight_ratio * current_lr

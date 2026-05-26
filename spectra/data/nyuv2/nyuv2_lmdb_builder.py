@@ -300,7 +300,7 @@ class QualityIngestionEngine:
             txn.commit()
             pbar.close()
         except Exception as e:
-            logger.error(f"FATAL ERROR during split {target_name} ingestion: {e}")
+            logger.error(f"FATAL ERROR during split {target_name} ingestion: {e}", exc_info=True)
             txn.abort()
             raise e
         

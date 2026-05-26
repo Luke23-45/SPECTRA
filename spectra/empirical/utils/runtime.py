@@ -20,7 +20,7 @@ from omegaconf import DictConfig, OmegaConf
 def _original_cwd() -> Path:
     try:
         return Path(get_original_cwd())
-    except Exception:
+    except (ValueError, RuntimeError):
         return Path.cwd()
 
 
@@ -48,7 +48,7 @@ def _git_info() -> Dict[str, Any]:
         result = subprocess.run(["git", "status", "--porcelain"], cwd=_original_cwd(), capture_output=True, text=True)
         if result.returncode == 0:
             info["is_dirty"] = bool(result.stdout.strip())
-    except Exception:
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
         pass
     return info
 
