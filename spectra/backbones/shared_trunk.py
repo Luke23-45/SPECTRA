@@ -1,6 +1,4 @@
 """
-spectra/backbones/shared_trunk.py
----------------------------------
 Generic Shared Trunk backbone for non-vision benchmarks (synthetic, clinical).
 
 Simple MLP with residual connections and layer normalization.
@@ -79,6 +77,6 @@ class ResBlock(nn.Module):
         self.norm = nn.LayerNorm(d_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # SOTA Pre-Norm architecture: x + f(norm(x))
+        # Pre-Norm architecture: x + f(norm(x))
         # Eliminates the need for learning rate warmup and prevents exploding gradients
         return x + self.net(self.norm(x))

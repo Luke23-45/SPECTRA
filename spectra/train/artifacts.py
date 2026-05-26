@@ -1,8 +1,4 @@
-"""
-spectra/train/artifacts.py
---------------------------
-Stable artifact and resume-path utilities for long-running training jobs.
-"""
+"""Stable artifact and resume-path utilities for training runs."""
 
 from __future__ import annotations
 
@@ -85,7 +81,7 @@ def _get_git_info() -> Dict[str, Any]:
     }
     
     try:
-        # Get commit hash
+
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             capture_output=True,
@@ -95,7 +91,7 @@ def _get_git_info() -> Dict[str, Any]:
         if result.returncode == 0:
             git_info["commit_hash"] = result.stdout.strip()
         
-        # Get branch name
+
         result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
@@ -105,7 +101,7 @@ def _get_git_info() -> Dict[str, Any]:
         if result.returncode == 0:
             git_info["branch"] = result.stdout.strip()
         
-        # Check if working directory is dirty
+
         result = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True,
@@ -156,7 +152,7 @@ def save_experiment_config(cfg: DictConfig, artifact_dir: Path) -> Path:
     """
     config_path = artifact_dir / "config.yaml"
     
-    # Save as resolved YAML (all interpolations resolved)
+
     config_path.write_text(OmegaConf.to_yaml(cfg, resolve=True), encoding="utf-8")
     
     return config_path
@@ -178,7 +174,7 @@ def generate_experiment_metadata(cfg: DictConfig, artifact_dir: Path) -> Dict[st
     method_name = cfg.get("method_name") or cfg.get("method", {}).get("name", "unknown")
     dataset_name = cfg.get("dataset_name", "unknown")
     
-    # Extract task information
+
     tasks = cfg.get("tasks", [])
     task_info = []
     for task in tasks:
@@ -190,7 +186,7 @@ def generate_experiment_metadata(cfg: DictConfig, artifact_dir: Path) -> Dict[st
             "weight": task.get("weight", 1.0)
         })
     
-    # Extract dataset-specific info
+
     dataset_info = {
         "name": dataset_name,
         "augmentation": cfg.get("augmentation", False),
@@ -200,7 +196,7 @@ def generate_experiment_metadata(cfg: DictConfig, artifact_dir: Path) -> Dict[st
         "train_subset_id": cfg.get("train_subset_id", None),
     }
     
-    # Add dataset-specific fields
+
     if dataset_name == "nyuv2":
         dataset_info.update({
             "num_classes": cfg.get("num_classes", 13),
@@ -263,7 +259,7 @@ def generate_experiment_metadata(cfg: DictConfig, artifact_dir: Path) -> Dict[st
             "checkpoint_every_minutes": train_cfg.get("checkpoint_every_minutes", 0),
             "selection_metric": resolve_selection_config(cfg)["metric"],
             "selection_mode": resolve_selection_config(cfg)["mode"],
-            "progress": OmegaConf.to_container(train_cfg.get("progress", {}), resolve=True),
+            "progress": OmegaConf.to_container(OmegaConf.create(train_cfg.get("progress", {})), resolve=True),
         },
         "resume": {
             "requested": None if cfg.get("resume_from", None) in (None, "", False) else str(cfg.get("resume_from")),

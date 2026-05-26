@@ -1,6 +1,4 @@
 """
-spectra/data/synthetic.py
--------------------------
 Synthetic N-Task Multi-Task Learning Dataset.
 
 Generates a controlled environment with extreme scale gaps between tasks
@@ -61,21 +59,21 @@ class SyntheticMTLDataset(Dataset):
         super().__init__()
         self.task_configs = task_configs or self.DEFAULT_TASKS
 
-        # [SOTA FIX]: Decouple Data Generation from Mapping Generation.
+        # Decouple data generation from mapping generation.
         # Otherwise passing `seed=seed+1` for validation inadvertently changes the 
         # actual target mapping network, making validation loss mathematically diverge.
         gen_data = torch.Generator().manual_seed(seed)
         
-        # [SOTA FIX]: Generator Collision Leakage. 
+        # Generator collision leakage prevention.
         # If mapping_seed == seed, the first N elements of X will perfectly mirror W_shared.
         # We must mathematically offset the generator states to guarantee orthogonality.
         gen_mapping = torch.Generator().manual_seed(mapping_seed + 1048576)
 
-        # [SOTA FIX]: Generate highly non-linear shared features to induce gradient conflicts
+        # Generate highly non-linear shared features to induce gradient conflicts
         # A purely linear mapping is trivial and won't trigger PCGrad or B-PGS surgeries.
         self.X = torch.randn(n_samples, input_dim, generator=gen_data)
         
-        # [SOTA FIX]: Inject Thermodynamic Anomalies for Tabular ALB Routing
+        # Inject thermodynamic anomalies for tabular ALB routing
         # True tabular datasets (like clinical or financial) have rare, severe outliers.
         # We inject a 5% chance of a massive 5-sigma spike into the feature space.
         # This gives the Asymmetric Latent Bottleneck (ALB) a structural anomaly
@@ -106,7 +104,7 @@ class SyntheticMTLDataset(Dataset):
                 # Ensure the configurable offset is actually used for classification imbalance
                 logits = Z @ W_task + cfg["offset"]  # [N, 1]
                 
-                # [SOTA FIX]: Probabilistic targets.
+                # Probabilistic targets.
                 # A hard margin `y = (logits > 0)` creates a deterministic step function.
                 # Optimizing BCE on a deterministic step function pushes network weights to infinity, 
                 # causing gradient magnitude explosion. This physically destroys gradient-variance 
@@ -152,9 +150,7 @@ class SyntheticMTLDataset(Dataset):
         return {"input": inputs, "targets": targets}
 
 
-# =====================================================================
 # STANDALONE VERIFICATION
-# =====================================================================
 
 if __name__ == "__main__":
     ds = SyntheticMTLDataset(n_samples=100)

@@ -1,0 +1,13 @@
+# @package _global_
+defaults:
+  - override /dataset: nyuv2
+  - override /method: bpgs
+  - _self_
+
+train:
+  epochs: 80
+  batch_size: 4
+  progress:
+    type: sota
+    refresh_rate: 1
+    update_interval_seconds: 15

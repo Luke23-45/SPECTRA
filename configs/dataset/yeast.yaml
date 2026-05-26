@@ -1,6 +1,4 @@
 # @package _global_
-# Yeast Protein Localization multi-label benchmark.
-
 dataset_name: yeast
 benchmark: yeast
 root: "datasets/yeast"

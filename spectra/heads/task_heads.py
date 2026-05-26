@@ -1,9 +1,6 @@
 """
-spectra/heads/regression.py & classification.py — Generic task heads.
-spectra/heads/__init__.py already exists.
-
-This file provides simple heads for synthetic/clinical benchmarks.
-NYUv2 dense heads (segmentation, depth, normals) will be separate.
+Generic task heads for synthetic/clinical benchmarks.
+NYUv2 dense heads (segmentation, depth, normals) are in dense_heads.py.
 """
 
 import torch

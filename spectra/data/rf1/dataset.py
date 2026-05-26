@@ -1,6 +1,4 @@
 """
-spectra/data/rf1/dataset.py
----------------------------
 River Flow RF1 multi-target regression dataset.
 
 Consumes the prepared on-disk format emitted by ``spectra.data.rf1.ingest``:

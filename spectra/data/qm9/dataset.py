@@ -1,6 +1,4 @@
 """
-spectra/data/qm9/dataset.py
----------------------------
 Prepared QM9 multi-target regression dataset.
 """
 

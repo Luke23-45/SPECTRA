@@ -1,9 +1,7 @@
 """
-spectra/baselines/gradnorm_proxy.py
------------------------------------
-Active gradient-norm proxy baseline inspired by Qin et al. (2025).
+Gradient-norm proxy baseline inspired by Qin et al. (2025).
 
-This is intentionally named as a proxy baseline, not as a faithful NTK-MTL implementation.
+Intentionally named as a proxy baseline, not a faithful NTK-MTL implementation.
 """
 
 from typing import Dict, List, Optional, Tuple

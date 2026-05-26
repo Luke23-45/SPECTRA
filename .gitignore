@@ -156,19 +156,8 @@ idea/
 #datasets/
 # VS Code
 .vscode/
-ledger_tracker.md
+datasets
+legacy
+working
 # Project Specific
 outputs/
-temp
-studies/bpgs_experiment_outputs
-working
-logs
-docs/
-xdev
-tests
-
-datasets
-# working
-# scripts/benchmarks
-# spectra/empirical
-# configs/empirical

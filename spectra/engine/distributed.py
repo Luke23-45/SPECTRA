@@ -1,7 +1,4 @@
-"""
-spectra/engine/distributed.py
------------------------------
-DDP utilities for multi-GPU training.
+"""DDP-safe utilities for distributed training.
 
 Provides safe AllReduce and broadcast wrappers that gracefully
 fall back to no-ops on single-GPU setups.

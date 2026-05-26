@@ -1,7 +1,5 @@
 """
-spectra/engine/weighters/__init__.py
-------------------------------------
-Centralized Multi-Task Learning Weighter Registry.
+Multi-task learning weighter registry.
 (Redirected to spectra.baselines to eliminate duplication).
 """
 

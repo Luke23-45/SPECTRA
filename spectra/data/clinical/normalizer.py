@@ -1,7 +1,5 @@
 """
-spectra/data/clinical/normalizer.py
---------------------------------------------------------------------------------
-APEX-MoE: Physics-Aware Clinical Normalization Engine (Ultimate v8.0 - Life-Critical).
+Physics-Aware Clinical Normalization Engine.
 
 Status: SAFETY-CRITICAL / PRODUCTION-READY
 Purpose: Transforms raw clinical vitals into neural-network-friendly representations
@@ -35,7 +33,7 @@ for ICU time-series data in sepsis prediction:
 
 7.  **Complete Reversibility**: Accurate denormalization for interpretability.
 
-Upgrades (Ultimate v8.0 - Life-Critical):
+Additional Features:
 1.  **Unified Log-Space + Linear**: Conditional log transform per channel with
     proper calibration-time and runtime alignment.
 2.  **Reversible Per-Patient Normalization**: Optional RevIN-style instance norm
@@ -71,7 +69,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, List, Union, Any
 
 # Logger Configuration
-logger = logging.getLogger("APEX_Normalizer_Ultimate")
+logger = logging.getLogger("spectra.data.clinical.normalizer")
 logger.setLevel(logging.INFO)
 
 # =============================================================================
@@ -84,7 +82,7 @@ logger.setLevel(logging.INFO)
 #    or represent sensor disconnection/malfunction.
 # 4. Surviving Sepsis Campaign Guidelines (2021 Update)
 
-# Iridium SQW-Synced Physics Bounds (Prevents Denormalizer Out-of-Bounds Exceptions)
+# Physics Bounds (Prevents Denormalizer Out-of-Bounds Exceptions)
 PHYSICS_BOUNDS_TS: Dict[str, Tuple[float, float]] = {
     'HR': (30.0, 180.0), 'O2Sat': (50.0, 100.0), 'SBP': (50.0, 220.0),
     'DBP': (30.0, 120.0), 'MAP': (40.0, 150.0), 'Resp': (8.0, 45.0), 'Temp': (32.0, 41.0),
@@ -144,7 +142,7 @@ class ClinicalNormalizer(nn.Module):
         ts_channels: int = 28, 
         static_channels: int = 6,
         safety_margin: float = 0.05,
-        epsilon: float = 1e-6,          # Iridium Precision FP16 Shield
+        epsilon: float = 1e-6,          # FP16 precision guard
         use_per_patient: bool = False,  # RevIN-style instance normalization
         store_instance_stats: bool = True  # Store stats for denormalization
     ):
@@ -156,10 +154,8 @@ class ClinicalNormalizer(nn.Module):
         self.use_per_patient = use_per_patient
         self.store_instance_stats = store_instance_stats
         
-        # =====================================================================
-        # PERSISTENT BUFFERS (Saved with Model Checkpoint)
-        # =====================================================================
-        
+                # PERSISTENT BUFFERS (Saved with Model Checkpoint)
+                
         # 1. Physics Bounds (Biological Hard Decks)
         self.register_buffer('ts_physics_min', torch.zeros(ts_channels))
         self.register_buffer('ts_physics_max', torch.ones(ts_channels))
@@ -211,10 +207,8 @@ class ClinicalNormalizer(nn.Module):
         if not path.exists():
             raise FileNotFoundError(f"[CRITICAL] Stats file not found: {path}")
 
-        # =====================================================================
-        # 1. SCHEMA VALIDATION (Critical Safety Check)
-        # =====================================================================
-        # [FIX] Robust Alias Mapping (Apply BEFORE validation)
+                # 1. SCHEMA VALIDATION (Critical Safety Check)
+                # [FIX] Robust Alias Mapping (Apply BEFORE validation)
         # PhysioNet and some subsets use 'Bilirubin_total', we use 'Bilirubin'.
         # We must normalize these names before the strict canonical check.
         sanitized_names = []
@@ -453,42 +447,32 @@ class ClinicalNormalizer(nn.Module):
             # Pass-through mode during early debugging/init
             return x_ts, x_static
 
-        # =====================================================================
-        # 0. INPUT SAFETY: NaN Recovery
-        # =====================================================================
-        # This is the last line of defense. Imputation should happen upstream.
+                # 0. INPUT SAFETY: NaN Recovery
+                # This is the last line of defense. Imputation should happen upstream.
         if torch.isnan(x_ts).any() or torch.isinf(x_ts).any():
             logger.warning("[NORMALIZER] NaN/Inf detected in input! Applying robust recovery.")
             x_ts = torch.nan_to_num(x_ts, nan=0.0, posinf=1.0, neginf=-1.0)
 
-        # =====================================================================
-        # 1. PREPARE BROADCASTING
-        # =====================================================================
-        p_min, p_max, s_min, s_max, l_mask = self._prepare_broadcast(x_ts)
+                # 1. PREPARE BROADCASTING
+                p_min, p_max, s_min, s_max, l_mask = self._prepare_broadcast(x_ts)
 
-        # =====================================================================
-        # 2. PHYSICS CLAMP (Biological Grounding)
-        # =====================================================================
-        # "Is this value biologically possible?"
+                # 2. PHYSICS CLAMP (Biological Grounding)
+                # "Is this value biologically possible?"
         x_phy = torch.clamp(x_ts, p_min, p_max)
         
-        # =====================================================================
-        # 3. CONDITIONAL LOG TRANSFORMATION
-        # =====================================================================
-        # For heavy-tailed lab values (Lactate, Bilirubin, etc.)
+                # 3. CONDITIONAL LOG TRANSFORMATION
+                # For heavy-tailed lab values (Lactate, Bilirubin, etc.)
         # log1p(x) is safe because physics bounds ensure x > 0 for log channels
         x_log = torch.log1p(torch.relu(x_phy))  # relu protects against tiny negatives
         x_processed = torch.where(l_mask, x_log, x_phy)
         
-        # =====================================================================
-        # 4. NORMALIZATION (Global Quantile or Per-Patient)
-        # =====================================================================
-        if self.use_per_patient:
+                # 4. NORMALIZATION (Global Quantile or Per-Patient)
+                if self.use_per_patient:
             # RevIN-style per-patient instance normalization
             x_norm = self._per_patient_normalize(x_processed)
         else:
             # Standard global quantile normalization
-            # [SOTA 2025: Leaky Clinical Clipping]
+            # Leaky clinical clipping
             # Replace hard clamp with a 'Linear Extension' that preserves gradients.
             # This is critical for crisis scenarios (HR > P99) which were previously blinded.
             x_norm = self._safe_normalize(x_processed, s_min, s_max)
@@ -496,17 +480,13 @@ class ClinicalNormalizer(nn.Module):
             x_norm = torch.where(x_norm > 1.0, 1.0 + (x_norm - 1.0) * 0.1, x_norm)
             x_norm = torch.where(x_norm < -1.0, -1.0 + (x_norm + 1.0) * 0.1, x_norm)
 
-        # =====================================================================
-        # 5. LATENT SPACE CLAMP (Neural Stability)
-        # =====================================================================
-        # [SOTA 2025] Physiological Headroom: Expand Latent Range to [-2.0, 2.0]
+                # 5. LATENT SPACE CLAMP (Neural Stability)
+                # Physiological headroom: expand latent range to [-2.0, 2.0]
         # This prevents saturation in the downstream Transformer while keeping values manageable.
         x_ts_norm = torch.clamp(x_norm, -2.0, 2.0)
 
-        # =====================================================================
-        # 6. STATIC CONTEXT HANDLING
-        # =====================================================================
-        x_static_norm = None
+                # 6. STATIC CONTEXT HANDLING
+                x_static_norm = None
         if x_static is not None:
             st_min = self.static_min.to(x_static.device).view(1, -1)
             st_max = self.static_max.to(x_static.device).view(1, -1)
@@ -593,10 +573,8 @@ class ClinicalNormalizer(nn.Module):
         if self.use_per_patient:
             return self._per_patient_denormalize(x_ts_norm)
 
-        # =====================================================================
-        # GLOBAL DENORMALIZATION
-        # =====================================================================
-        rank = len(x_ts_norm.shape)
+                # GLOBAL DENORMALIZATION
+                rank = len(x_ts_norm.shape)
         view_shape = [1] * (rank - 1) + [-1]
         
         s_min = self.ts_stat_min.to(x_ts_norm.device).view(view_shape)
@@ -611,9 +589,9 @@ class ClinicalNormalizer(nn.Module):
         # 2. Scale back to statistical range
         x_scaled = x_01 * (s_max - s_min) + s_min
         
-        # 3. [Iridium SOTA FIX] FP16 Hard Math Protection
-        # max FP16 is 65504. log(65500) = 11.08. 
-        # LOG_GUARD MUST be <= 11.0 to prevent Day-4 NaN explosions.
+        # 3. FP16 Hard Math Protection
+        # max FP16 is 65504. log(65500) = 11.08.
+        # LOG_GUARD MUST be <= 11.0 to prevent NaN explosions in long training runs.
         LOG_GUARD = 11.0 
         LINEAR_GUARD = 5000.0
         
@@ -719,7 +697,7 @@ class ClinicalNormalizer(nn.Module):
         mode = "Per-Patient (RevIN)" if self.use_per_patient else "Global-Quantile"
         
         return (
-            f"ClinicalNormalizer v8.0 (Ultimate - Life-Critical)\n"
+            f"ClinicalNormalizer\n"
             f"  Status: {status}\n"
             f"  Mode: {mode}\n"
             f"  Channels: {self.ts_channels} time-series, {self.static_channels} static\n"
@@ -737,7 +715,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     
     print("="*60)
-    print("APEX Clinical Normalizer (Ultimate v8.0) - Smoke Test")
+    print("Clinical Normalizer - Smoke Test")
     print("="*60)
     
     # Create normalizer

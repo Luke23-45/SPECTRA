@@ -1,10 +1,5 @@
 """
-spectra/data/nyuv2/dataset.py
-------------------------------
-NYUv2 Multi-Task Dense Prediction Dataset (Production-Grade).
-
-Author: SPECTRA Research Team
-Status: Production-Ready
+NYUv2 Multi-Task Dense Prediction Dataset.
 
 Description:
     Loads the NYUv2 dataset from LMDB storage (materialized by nyuv2_lmdb_sota.py)
@@ -147,16 +142,16 @@ class NYUv2Dataset(Dataset):
         self.split = "val" if split in ["validation", "val", "test"] else "train"
         self.num_classes = num_classes
         
-        # --- Axe v6.6: Multi-Directory Resolution ---
-        # The new structure places data.lmdb inside split-specific subdirs
+        # Multi-directory resolution:
+        # The structure places data.lmdb inside split-specific subdirs
         self.split_dir = self.root / self.split
         self.lmdb_path = self.split_dir / "data.lmdb"
         self.index_path = self.root / f"{self.split}_index.json"
         
         if not self.lmdb_path.exists():
-            raise FileNotFoundError(f"[NYUv2-Axe] LMDB missing at: {self.lmdb_path}")
+            raise FileNotFoundError(f"[NYUv2] LMDB missing at: {self.lmdb_path}")
         if not self.index_path.exists():
-            raise FileNotFoundError(f"[NYUv2-Axe] Index missing at: {self.index_path}")
+            raise FileNotFoundError(f"[NYUv2] Index missing at: {self.index_path}")
             
         with open(self.index_path, "r") as f:
             self.manifest = json.load(f)
@@ -165,7 +160,7 @@ class NYUv2Dataset(Dataset):
         self.samples = self.manifest.get("episodes", [])
         self.data_len = len(self.samples)
         
-        # Axe v6.6: Global stats are now inside "metadata"
+        # Global stats are stored inside "metadata"
         self.metadata = self.manifest.get("metadata", {})
         self.stats = self.metadata.get("stats", {})
         self.storage = self.metadata.get("storage", {})
@@ -180,7 +175,7 @@ class NYUv2Dataset(Dataset):
         self.subset_metadata: Dict[str, Any] = {}
         
         if self.data_len == 0:
-            logger.warning(f"[NYUv2-Axe] Split {self.split} index is EMPTY.")
+            logger.warning(f"[NYUv2] Split {self.split} index is EMPTY.")
 
         # Fork-safety
         self._lmdb_env = None
@@ -317,7 +312,7 @@ class NYUv2Dataset(Dataset):
         sample_meta = self.samples[global_idx]
         hw = sample_meta["shape_hw"]
 
-        # 1. Fetch & Deserialize (Axe v6.6: NASA-Grade Integrity)
+        # 1. Fetch & Deserialize
         img_bytes, lbl_bytes, depth_bytes, norm_bytes = self._read_sample_bytes(sample_meta)
 
         image = self._decode_uint8_image(img_bytes, hw, layout=self.image_layout)

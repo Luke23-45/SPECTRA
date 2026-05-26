@@ -1,8 +1,4 @@
-"""
-spectra/baselines/kendall.py
-----------------------------
-Canonical Kendall uncertainty-weighting baseline.
-"""
+"""Kendall uncertainty-weighting baseline."""
 
 from typing import Dict, List, Optional, Tuple
 

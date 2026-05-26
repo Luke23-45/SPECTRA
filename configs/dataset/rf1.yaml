@@ -1,7 +1,4 @@
 # @package _global_
-# configs/dataset/rf1.yaml
-# River Flow RF1 multi-target regression benchmark.
-
 dataset_name: rf1
 benchmark: rf1
 root: "datasets/rf1"

@@ -1,6 +1,4 @@
 # @package _global_
-# QM9 multi-target regression benchmark.
-
 dataset_name: qm9
 benchmark: qm9
 root: "datasets/qm9"

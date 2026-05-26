@@ -1,8 +1,4 @@
-"""
-spectra/modules/base.py
------------------------
-Base Class for Vertical Silos (Domain Modules).
-"""
+"""Base class for vertical silos (domain modules)."""
 
 import pytorch_lightning as pl
 import torch

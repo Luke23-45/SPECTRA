@@ -1,10 +1,8 @@
 """
-spectra/architectures/builder.py
---------------------------------
-Centralized Neural Architecture Factory.
+Centralized neural architecture factory.
 
-Extracts the monolithic model building logic, providing uniform
-access to the SharedTrunk and specific Heads for all domains.
+Provides uniform access to the SharedTrunk and task-specific heads
+for all domains.
 """
 
 import torch

@@ -1,7 +1,5 @@
-"""
-spectra/baselines/static.py
----------------------------
-Static Equal Weighting — lower bound baseline.
+"""
+Static equal weighting — lower bound baseline.
 
 Simply sums task losses with equal (or predefined) weights.
 No learnable parameters. Provides the performance floor.

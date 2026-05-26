@@ -1,6 +1,4 @@
 """
-spectra/utils/seed.py
----------------------
 Deterministic seeding for full reproducibility.
 
 Sets all random seeds across Python, NumPy, and PyTorch to ensure

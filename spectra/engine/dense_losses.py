@@ -1,17 +1,13 @@
-"""
-spectra/engine/dense_losses.py
--------------------------------
-Dense Prediction Loss Functions for NYUv2 Multi-Task Learning.
+"""Dense pixel-wise loss functions for NYUv2 multi-task learning.
 
 These losses handle the pixel-level subtleties that standard PyTorch losses
 don't support out of the box:
     1. MaskedL1Loss: Depth L1 only on valid pixels (Kinect failures → depth=0)
     2. DenseCosineLoss: Angular error for surface normals with masking
 
-CRITICAL for B-PGS:
-    These losses return a SINGLE SCALAR per task — this is what B-PGS operates on.
-    The masking is internal to the loss; B-PGS sees only the final scalar and
-    adjusts its log-variance accordingly. This is clean separation of concerns.
+Design note:
+    These losses return a single scalar per task. The masking is internal
+    to the loss; the weighter sees only the final scalar.
 
 References:
     - Liu et al. "End-to-End Multi-Task Learning with Attention" (CVPR 2019)

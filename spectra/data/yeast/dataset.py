@@ -1,6 +1,4 @@
 """
-spectra/data/yeast/dataset.py
------------------------------
 Prepared Yeast Protein Localization multi-label dataset.
 """
 

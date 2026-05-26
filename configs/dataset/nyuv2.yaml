@@ -1,7 +1,4 @@
 # @package _global_
-# configs/dataset/nyuv2.yaml
-# Dataset configuration for NYUv2 multi-task dense prediction benchmark.
-
 dataset_name: nyuv2
 benchmark: nyuv2
 root: "datasets/nyuv2_lmdb/data"
@@ -19,8 +16,7 @@ image_width: 384
 train_size: 795
 val_size: 654
 
-# Backward-compatible nested runtime fields for utilities that still inspect
-# cfg.dataset.* instead of top-level @package _global_ values.
+# Keep nested dataset fields for utilities that still read `cfg.dataset.*`.
 dataset:
   name: nyuv2
   benchmark: nyuv2

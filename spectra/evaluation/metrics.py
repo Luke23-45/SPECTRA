@@ -1,6 +1,4 @@
 """
-spectra/evaluation/metrics.py
-------------------------------
 Task-specific evaluation metrics for SPECTRA multi-task benchmarks.
 
 Design principles:
@@ -174,8 +172,7 @@ class SegmentationMetrics:
             # Single CPU transfer — C×C matrix (13×13 = 169 scalars)
             conf = self._conf_matrix.float().cpu()
 
-        # [SOTA FIX]: DDP Metric Sync. All-reduce the confusion matrix globally.
-        # This guarantees mathematical correctness rather than biased GPU-averages.
+        # DDP: all-reduce the confusion matrix globally for exact metrics.
         conf = sync_tensor_across_gpus(conf)
 
         # True positives: diagonal

@@ -1,6 +1,4 @@
 """
-spectra/baselines/base.py
--------------------------
 Abstract base class for all MTL weighting methods.
 
 All weighters share the same forward() signature, enabling

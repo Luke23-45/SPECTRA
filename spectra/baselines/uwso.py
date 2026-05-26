@@ -1,8 +1,4 @@
-"""
-spectra/baselines/uwso.py
--------------------------
-Canonical UW-SO baseline with fixed temperature and raw batch losses.
-"""
+"""UW-SO baseline with fixed temperature and raw batch losses."""
 
 from typing import Dict, List, Optional, Tuple
 

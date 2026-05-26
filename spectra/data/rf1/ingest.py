@@ -1,6 +1,4 @@
 """
-spectra/data/rf1/ingest.py
---------------------------
 River Flow RF1 download and materialization pipeline.
 
 This pipeline downloads the public Mulan benchmark ARFF files, maps the

@@ -1,7 +1,5 @@
 """
-spectra/engine/optimizers/base.py
----------------------------------
-Strict Orthogonal Engine API Protocol.
+Orthogonal engine API protocol.
 Ensures optimization logic is completely decoupled from domain/dataset logic.
 """
 

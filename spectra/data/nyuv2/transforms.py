@@ -1,6 +1,4 @@
 """
-spectra/data/nyuv2/transforms.py
----------------------------------
 Joint Spatial Transforms for NYUv2 Multi-Task Dense Prediction.
 
 All transforms apply identical spatial operations to image + all task labels

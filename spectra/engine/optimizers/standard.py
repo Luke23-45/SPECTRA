@@ -1,8 +1,4 @@
-"""
-spectra/engine/optimizers/standard.py
--------------------------------------
-Standard Automatic Backpropagation Engine.
-"""
+"""Standard automatic backpropagation engine."""
 
 from typing import Dict, Any
 import torch

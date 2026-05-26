@@ -1,8 +1,4 @@
-"""
-spectra/engine/optimizers/pcgrad.py
------------------------------------
-PCGrad Manual Surgery Engine.
-"""
+"""PCGrad manual gradient surgery engine."""
 
 from typing import Dict, Any, List
 import torch
@@ -44,9 +40,9 @@ class PCGradEngine(OptimizationEngine):
         weighted_task_loss_list = list(losses.values())
 
         if scaler is not None:
-            # ═══════════════════════════════════════════════════════════
-            # SOTA AMP-Safe PCGrad Pipeline (v2 — Clean Gradient Flow)
-            # ═══════════════════════════════════════════════════════════
+
+            # AMP-Safe PCGrad Pipeline
+
             
             # 1. Per-task backbone gradients (SCALED magnitude)
             task_grads = []
@@ -82,10 +78,9 @@ class PCGradEngine(OptimizationEngine):
             # 4. Unscale ALL gradients (backbone + heads) uniformly
             scaler.unscale_(raw_opt)
 
-            # [SOTA Fix] DDP Explicit Synchronization
-            # Because `autograd.grad` bypasses DDP's `backward()` hooks, PCGrad
-            # gradients are purely local. If we don't manually all-reduce them,
-            # parameters identicality diverges across GPUs instantly!
+            # DDP explicit synchronization:
+            # autograd.grad bypasses DDP backward hooks, so PCGrad
+            # gradients are purely local. Manual all-reduce is required.
             if module.trainer.world_size > 1 and torch.distributed.is_initialized():
                 for p in module.parameters():
                     if p.grad is not None:
@@ -95,18 +90,18 @@ class PCGradEngine(OptimizationEngine):
             if module.cfg.train.get("grad_clip", 0) > 0:
                 module.clip_gradients(opt, gradient_clip_val=module.cfg.train.grad_clip)
 
-            # 6. NaN-safe Optimizer Step
+            # NaN-safe optimizer step
             old_scale = scaler.get_scale()
             scaler.step(raw_opt)
             scaler.update()
 
-            # 7. Scheduler Sync
+            # Scheduler step (skip if scaler reduced scale to avoid bad LR update)
             if sch is not None and scaler.get_scale() >= old_scale:
                 sch.step()
         else:
-            # ═══════════════════════════════════════════════════════════
+
             # Standard FP32 Pipeline
-            # ═══════════════════════════════════════════════════════════
+
             
             # 1. Per-task backbone gradients
             task_grads = []
@@ -139,7 +134,7 @@ class PCGradEngine(OptimizationEngine):
                         if g is not None:
                             p.grad = g
 
-            # [SOTA Fix] DDP Explicit Synchronization (FP32)
+            # DDP explicit synchronization (FP32 path)
             if module.trainer.world_size > 1 and torch.distributed.is_initialized():
                 for p in module.parameters():
                     if p.grad is not None:

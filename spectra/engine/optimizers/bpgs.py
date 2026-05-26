@@ -1,7 +1,5 @@
 """
-spectra/engine/optimizers/bpgs.py
----------------------------------
-Canonical B-PGS engine for the active research path.
+B-PGS split optimization engine.
 
 Implements the split optimization contract:
   - optimizer 0 updates network parameters

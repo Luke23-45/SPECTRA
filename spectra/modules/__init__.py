@@ -1,7 +1,5 @@
 """
-spectra/modules/__init__.py
----------------------------
-Exposes the fully decoupled Vertical Silos for Hydra deployment.
+Exposes the vertical silo modules for Hydra deployment.
 """
 
 from spectra.modules.base import OrthogonalSPECTRAModule

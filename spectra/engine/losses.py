@@ -1,7 +1,5 @@
 """
-spectra/engine/losses.py
-------------------------
-Decoupled Loss Function Registry for SPECTRA.
+Centralized loss function registry.
 """
 
 import torch

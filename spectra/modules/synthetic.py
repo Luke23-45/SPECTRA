@@ -1,8 +1,5 @@
 """
-spectra/modules/synthetic.py
-----------------------------
-Vertical Silo for Synthetic/Small-Scale Domains.
-Pure MSE loss regressions — extremely simple module.
+Vertical silo for synthetic/small-scale regression and classification domains.
 """
 
 import torch
@@ -57,7 +54,7 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
                 self._val_binary_metrics[name] = BinaryClassificationMetrics()
                 self._classification_task_names.append(name)
             
-            # Filter out non-loss arguments (Hydra/SPECTRA specific)
+
             exclude = ["name", "loss", "weight", "metrics", "type", "manifold", "target", "output_dim"]
             loss_kwargs = {k: v for k, v in task.items() if k not in exclude}
             self.task_losses[name] = LOSS_REGISTRY[task.loss](**loss_kwargs)
@@ -81,17 +78,16 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
             pred = predictions[name]
             target = batch["targets"][name]
             
-            # [SOTA Fix] Shape alignment for 2D batches (B, 1) vs (B,)
+            # Shape alignment for 2D batches (B, 1) vs (B,)
             if pred.dim() <= 2 and target.dim() <= 2:
                 if pred.dim() > target.dim(): pred = pred.squeeze(-1)
                 if target.dim() > pred.dim(): target = target.squeeze(-1)
 
-            # [SOTA Fix] Online Target Normalization to prevent Adam scale trap
+            # Online target normalization to prevent Adam scale trap
             if name in self.target_scalers:
                 target_for_loss = self.target_scalers[name].normalize(target)
                 
-                # [SOTA Fix] Create raw unscaled metrics for training to match Validation logic
-                # using .detach() to ensure no gradients flow backward from the logging block.
+                # Raw unscaled metrics for training (detached to prevent gradient flow)
                 pred_unscaled = self.target_scalers[name].denormalize(pred.detach())
                 raw_l = self.task_losses[name](pred_unscaled, target)
             else:
@@ -110,7 +106,7 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
         if self.is_pcgrad:
             total_loss = losses_tensor.sum()
         elif self.is_bpgs:
-            # BPGS: network_loss for base flow (gradients to model)
+            # B-PGS: network_loss for base flow (gradients to model)
             total_loss = self.weighter.network_loss(raw_losses_list)
         else:
             total_loss, w_metrics = self.weighter(
@@ -123,11 +119,10 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
             for key, val in w_metrics.items():
                 self.log(f"train/{key}", val, on_step=False, on_epoch=True, sync_dist=True, batch_size=bsz)
 
-        # BPGS: also compute uncertainty_loss for fiber flow (gradients to theta)
+        # B-PGS: compute uncertainty_loss for theta flow
         if self.is_bpgs:
             uncertainty = self.weighter.uncertainty_loss(raw_losses_list)
-            # Note: uncertainty_loss backward is handled by the optimizer on theta
-            # which is separate from the model parameter optimization
+
             total_loss = total_loss + uncertainty
 
         final_loss = self.engine.backward_and_step(
@@ -141,12 +136,11 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
 
         bsz = batch.get("input").shape[0] if isinstance(batch.get("input"), torch.Tensor) else 1
         
-        # [SOTA Fix] Ensure training loss is ALWAYS logged to progress bar, 
-        # even during manual optimization where final_loss is None.
+
         log_loss = final_loss.detach() if final_loss is not None else total_loss.detach()
         self.log("train/total_loss", log_loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True, batch_size=bsz)
         
-        # Log BOTH normalized mathematical loss and raw human-readable loss
+
         for name, loss in loss_dict.items():
             self.log(f"train/{name}_loss_norm", loss.detach(), on_step=False, on_epoch=True, sync_dist=True, batch_size=bsz)
         for name, raw in raw_loss_dict.items():
@@ -163,14 +157,14 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
             pred = predictions[name]
             target = batch["targets"][name]
 
-            # [SOTA Fix] Shape alignment
+
             if pred.dim() <= 2 and target.dim() <= 2:
                 if pred.dim() > target.dim(): pred = pred.squeeze(-1)
                 if target.dim() > pred.dim(): target = target.squeeze(-1)
 
-            # [SOTA Fix] Dual-Scale Metric resolution
-            # 1. Denormalize for human-readable metrics (RAW real-world error)
-            # 2. Normalize target for optimizer scaling (NORMALIZED error)
+            # Dual-scale metric resolution:
+            # 1. Denormalize for human-readable metrics
+            # 2. Normalize target for optimizer-scale metrics
             if name in self.target_scalers:
                 pred_unscaled = self.target_scalers[name].denormalize(pred)
                 target_norm = self.target_scalers[name].normalize(target)
@@ -178,7 +172,7 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
                 pred_unscaled = pred
                 target_norm = target
 
-            # Raw human-readable loss logging (Scale: ~80,000)
+
             raw_loss = self.task_losses[name](pred_unscaled, target)
             self.log(f"val/{name}_loss", raw_loss, sync_dist=True)
 
@@ -191,7 +185,7 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
                 multilabel_logits.append(pred.reshape(-1, 1))
                 multilabel_targets.append(target.reshape(-1, 1))
             
-            # Normalized loss for dynamic scaling (Scale: ~1.0)
+
             norm_loss = self.task_losses[name](pred, target_norm)
             self.log(f"val/{name}_loss_norm", norm_loss, sync_dist=True)
             weighted_task_loss_list.append(norm_loss * self.task_weights[name])
@@ -203,12 +197,8 @@ class SyntheticSPECTRAModule(OrthogonalSPECTRAModule):
 
         losses_tensor = torch.stack(weighted_task_loss_list)
 
-        # CRITICAL: val/total_loss must NOT pass through the uncertainty weighter.
-        # KendallWeighter.forward() injects training-evolved σ as precision weights.
-        # As σ shrinks during training, 0.5/σ² grows even when task losses improve —
-        # causing val/total_loss to rise while the model gets better, which corrupts
-        # the early stopping signal.
-        # Plain weighted sum is scale-consistent across all epochs and all methods.
+        # val/total_loss uses plain weighted sum (not uncertainty weighter)
+        # to keep the early stopping signal scale-consistent across epochs.
         total_val_loss = losses_tensor.sum()
 
         self.log("val/total_loss", total_val_loss, sync_dist=True, prog_bar=True)

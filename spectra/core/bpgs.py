@@ -1,6 +1,4 @@
 """
-spectra/core/bpgs.py
---------------------
 B-PGS weighting with uncertainty geometry.
 
 Canonical configuration (validated by ablation on NYUv2, 4-epoch sweep):

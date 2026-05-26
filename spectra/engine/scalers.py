@@ -1,7 +1,5 @@
 """
-spectra/engine/scalers.py
--------------------------
-State-of-the-Art (SOTA) Dynamic Target Standardization.
+Online target normalization for stable multi-task optimization.
 
 Resolves the Adam Scale-Invariance Trap mathematically in Multi-Task Learning.
 Tracks target distributions (mean, variance) online using running
@@ -45,7 +43,7 @@ class OnlineTargetScaler(nn.Module):
         batch_mean = targets.mean()
         batch_var = targets.var(unbiased=False) if targets.numel() > 1 else torch.zeros_like(batch_mean)
 
-        # [SOTA Fix] Removed synchronous DDP all_reduce.
+        # Removed synchronous DDP all_reduce.
         # Calling all_reduce sequentially 14 times per batch completely locks the GPU.
         # In DDP, batches are IID (Independent & Identically Distributed) across GPUs,
         # so local running-average updates are perfectly unbiased and mathematically sufficient.
@@ -55,7 +53,7 @@ class OnlineTargetScaler(nn.Module):
             self.running_var.copy_(batch_var)
             self.initialized.fill_(True)
         else:
-            # [SOTA Fix] Use in-place copy_ instead of reassignment to preserve buffer persistence
+            # Use in-place copy_ instead of reassignment to preserve buffer persistence
             new_mean = (1 - self.momentum) * self.running_mean + self.momentum * batch_mean
             new_var = (1 - self.momentum) * self.running_var + self.momentum * batch_var
             self.running_mean.copy_(new_mean)

@@ -1,6 +1,4 @@
 """
-spectra/core/gated_fusion.py
-----------------------------
 Primitive building blocks for the Asymmetric Latent Bottleneck (ALB).
 
 Contains:
@@ -18,9 +16,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# =====================================================================
 # 1. GATED RESIDUAL NETWORK (GRN)
-# =====================================================================
 
 class GatedResidualNetwork(nn.Module):
     """
@@ -58,9 +54,7 @@ class GatedResidualNetwork(nn.Module):
         return residual + g * out
 
 
-# =====================================================================
 # 2. SQUEEZE-EXCITATION BLOCK
-# =====================================================================
 
 class SqueezeExcitation(nn.Module):
     """
@@ -91,9 +85,7 @@ class SqueezeExcitation(nn.Module):
         return x * weights
 
 
-# =====================================================================
 # 3. SYMMETRY GATE
-# =====================================================================
 
 class SymmetryGate(nn.Module):
     """
@@ -119,9 +111,7 @@ class SymmetryGate(nn.Module):
         return (1 - g) * x + g * p
 
 
-# =====================================================================
 # 4. MULTI-SCALE INCEPTION BLOCK (1D)
-# =====================================================================
 
 class MultiScaleInceptionBlock(nn.Module):
     """
@@ -147,7 +137,7 @@ class MultiScaleInceptionBlock(nn.Module):
         mid = out_dim // 4
 
         # Multi-scale convolution paths
-        # NOTE: Using GroupNorm(1) instead of BatchNorm1d because BN
+        # Using GroupNorm(1) instead of BatchNorm1d because BN
         # crashes when T=1 (synthetic 2D data unsqueezed for ALB)
         self.branch_3 = nn.Sequential(
             nn.Conv1d(in_dim, mid, kernel_size=3, padding=1),
@@ -191,7 +181,7 @@ class MultiScaleInceptionBlock(nn.Module):
         """
         identity = self.res(x)
 
-        # [SOTA FIX]: Tabular ALB (T=1). Bypass temporal convolutions entirely.
+        # Tabular ALB (T=1): bypass temporal convolutions entirely.
         if x.shape[-1] == 1:
             # Instead of 4 parallel branches that dilute energy with zeros, 
             # we run 4 independent 1x1 dense projections using the center weights 
@@ -201,7 +191,7 @@ class MultiScaleInceptionBlock(nn.Module):
             w7, b7 = self.branch_7[0].weight[:, :, 3:4], self.branch_7[0].bias
             w_pool, b_pool = self.branch_pool[1].weight, self.branch_pool[1].bias
             
-            # Scale gain to compensate for lost weights to prevent thermal death
+            # Scale gain to compensate for lost kernel weights
             out_3 = self.branch_3[2](self.branch_3[1](F.conv1d(x, w3 * (3**0.5), b3)))
             out_5 = self.branch_5[2](self.branch_5[1](F.conv1d(x, w5 * (5**0.5), b5)))
             out_7 = self.branch_7[2](self.branch_7[1](F.conv1d(x, w7 * (7**0.5), b7)))
@@ -235,9 +225,7 @@ class MultiScaleInceptionBlock(nn.Module):
         return self.norm(out + identity).transpose(1, 2)  # [B, C_out, T]
 
 
-# =====================================================================
 # 5. VOLATILITY-AWARE GATE
-# =====================================================================
 
 class VolatilityAwareGate(nn.Module):
     """
@@ -272,7 +260,7 @@ class VolatilityAwareGate(nn.Module):
             nn.Linear(1, d_model),
             nn.SiLU(),
         )
-        # [SOTA FIX]: Tabular 0D Energy Projection
+        # Tabular 0D energy projection
         self.tabular_energy_proj = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.SiLU(),
@@ -294,7 +282,7 @@ class VolatilityAwareGate(nn.Module):
             gate: [B, T, D] gate values in [0, 1].
         """
         # Temporal volatility: |x_t - x_{t-1}|
-        # [SOTA FIX]: Prevent T=1 degeneracy where |x_0 - 0| equals arbitrary magnitude.
+        # Prevent T=1 degeneracy where |x_0 - 0| equals arbitrary magnitude.
         if raw_input.shape[1] == 1:
             # TABULAR ALB: Compute Thermodynamic Energy Deviation instead of Temporal Delta
             # This isolates structurally anomalous tabular features (hot spots)

@@ -1,8 +1,5 @@
 """
-spectra/modules/vision.py
--------------------------
-Vertical Silo for the Vision Domain (NYUv2 Spatial Tasks).
-Contains ZERO logic for Sepsis or MSE tabular tasks.
+Vertical silo for the vision domain (NYUv2 spatial tasks).
 """
 
 import torch
@@ -31,12 +28,12 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
     def __init__(self, cfg: DictConfig, engine: OptimizationEngine):
         super().__init__(cfg, engine)
         
-        # 1. Architecture Assembly
+
         self.model = build_model(cfg)
         
         self.backbone = self.model.backbone
         self.heads = self.model.heads
-        # 2. Weighter Initialization
+
         self.weighter = build_weighter(cfg)
         method_name = cfg.get("method_name") or cfg.get("method", {}).get("name")
         self.is_pcgrad = (method_name == "pcgrad")
@@ -51,7 +48,7 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
             self.batch_train_transform = None
             self.batch_augmentation_mode = "disabled"
         
-        # 3. Tasks & Spatial Metrics
+
         self.task_names = [task.name for task in cfg.tasks]
         self.task_weights = nn.ParameterDict()
         self.task_losses = nn.ModuleDict()
@@ -62,7 +59,7 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
         for task in cfg.tasks:
             name = task.name
             
-            # Loss Setup
+
             self.task_weights[name] = nn.Parameter(torch.tensor(task.get("weight", 1.0)), requires_grad=False)
             
             exclude = ["name", "loss", "weight", "metrics", "type", "manifold", "target"]
@@ -72,7 +69,7 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
             self.task_losses[name] = loss_fn
             self._val_losses[name] = LOSS_REGISTRY[task.loss](**loss_kwargs)
 
-            # Vision Metrics Initialization
+
             if name == "segmentation":
                 n_classes = task.get("num_classes", 13)
                 ignore_idx = task.get("ignore_index", 255)
@@ -106,14 +103,14 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
         loss_dict = {}
         weighted_task_loss_list = []
         
-        # Robustly extract targets from batch
+
         targets = batch.get("targets", batch.get("target"))
         
         for name in self.task_names:
             pred = predictions[name]
             target = targets[name]
             
-            # Shape alignment
+
             if pred.dim() <= 2 and target.dim() <= 2:
                 if pred.dim() > target.dim(): pred = pred.squeeze(-1)
                 if target.dim() > pred.dim(): target = target.squeeze(-1)
@@ -164,7 +161,7 @@ class VisionSPECTRAModule(OrthogonalSPECTRAModule):
         predictions = self(batch)
         total_val_loss = torch.tensor(0.0, device=self.device)
         
-        # Robustly extract targets from batch
+
         targets = batch.get("targets", batch.get("target"))
         
         for name in self.task_names:

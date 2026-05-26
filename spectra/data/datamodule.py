@@ -1,6 +1,4 @@
 """
-spectra/data/datamodule.py
---------------------------
 Universal DataModule for SPECTRA experiments.
 
 Orchestrates data acquisition, split management, and hardware-optimized 
@@ -106,7 +104,7 @@ class SPECTRADataModule(pl.LightningDataModule):
     """
     Central dispatcher for all SPECTRA benchmarks.
     
-    NASA-Grade guarantees:
+    Guarantees:
     - Rank-aware seeding for deterministic DDP streams.
     - Tiered Acquisition: Automatic fallback from Cloud to Local Build.
     - Schema Integrity: Cross-dataset standardization via {input, targets, meta}.
@@ -348,7 +346,7 @@ class SPECTRADataModule(pl.LightningDataModule):
                 seed=self.cfg.seed,
                 target=sampler_target,
             )
-            # Sampler is inherently Distributed-aware (Axe v3.2 StatefulSampler)
+            # Sampler is inherently Distributed-aware (StatefulSampler)
             return DataLoader(
                 self.train_ds,
                 batch_size=batch_size,

@@ -16,3 +16,4 @@ opencv-python>=4.8.0
 torchvision>=0.16.0
 python-dotenv>=1.0.0
 torchmetrics>=1.2.0
+pyyaml>=6.0

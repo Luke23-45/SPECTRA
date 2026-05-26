@@ -2,25 +2,27 @@ defaults:
   - dataset: synthetic
   - method: pcgrad
   - _self_
+  - optional preset: null
 
-# ─── Experiment Metadata ──────────────────────────────────────
 method_name: "${method.name}"
 run_name: "${method_name}_${dataset_name}_s${seed}"
 seed: 42
 resume_from: null
 require_cuda: false
 
-# ─── Logging ─────────────────────────────────────────────────
+train:
+  progress:
+    type: sota
+    update_interval_seconds: 15.0
+
 logging:
   use_wandb: false
   wandb_project: spectra-mtl
   wandb_mode: offline
 
-# ─── Output ──────────────────────────────────────────────────
 output_dir: "./outputs/${run_name}"
 
-# ─── Hydra Configuration ───────────────────────────────────────
-# Disable Hydra's timestamped subdir to use stable artifact dir directly
+# Keep Hydra outputs in the stable artifact directory.
 hydra:
   run:
     dir: ${output_dir}

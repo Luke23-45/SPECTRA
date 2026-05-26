@@ -1,6 +1,4 @@
 """
-spectra/data/nyuv2/__init__.py
--------------------------------
 NYUv2 Multi-Task Dense Prediction Data Package.
 
 Exports:

@@ -1,13 +1,11 @@
 """
-spectra/data/clinical/dataset.py
---------------------------------------------------------------------------------
-APEX-MoE Frontier Data Loader.
-Author: APEX Research Team
-Version: 2.5 (Gold Standard / Safety-Critical)
+Clinical ICU Data Loader.
+
+Version: 2.5 (Safety-Critical)
 
 Description:
-    The definitive data pipeline for APEX-MoE. It implements a high-performance, 
-    fault-tolerant, and clinically-aware loading strategy.
+    High-performance, fault-tolerant, and clinically-aware loading strategy
+    for ICU time-series data.
 
     Architecture:
     1. Tiered Acquisition: Automatic resolution of data from Local -> Cloud -> Build.
@@ -40,7 +38,7 @@ from tqdm import tqdm
 from spectra.engine.distributed import get_rank
 
 # --- Configuration & Constants ---
-logger = logging.getLogger("APEX_Data_Frontier")
+logger = logging.getLogger("spectra.data.clinical")
 logger.setLevel(logging.INFO)
 
 # Clinical Constants
@@ -163,7 +161,7 @@ def ensure_data_ready(
         raise RuntimeError("FATAL: Could not acquire or build ICU Dataset. Check connectivity and permissions.")
 
 # ==============================================================================
-# 1. CORE ARCHITECTURE: The APEX Loader
+# 1. CORE DATASET
 # ==============================================================================
 
 class ICUTrajectoryDataset(Dataset):
@@ -274,7 +272,7 @@ class ICUTrajectoryDataset(Dataset):
         
         # --- Lazy LMDB Handle ---
         self._lmdb_env = None
-        self._parent_pid = os.getpid() # [v4.1.1 SOTA FIX] Fork-Safety
+        self._parent_pid = os.getpid()  # Fork-safety tracking
         self.max_cache_size = max_cache_size
 
         logger.info(f"[{split.upper()}] Initialized. Windows: {self.total_chunks:,} | Episodes: {valid_episodes:,}")
@@ -285,7 +283,7 @@ class ICUTrajectoryDataset(Dataset):
     def _init_lmdb(self):
         """
         Thread-safe lazy initialization of the LMDB environment.
-        [v4.1.1 SOTA FIX] PID-Aware Multiprocessing Safety.
+        PID-Aware Multiprocessing Safety:
         Ensures that if the dataset is forked (DataLoader workers), 
         the child processes open their own LMDB environment handles.
         """
@@ -317,14 +315,14 @@ class ICUTrajectoryDataset(Dataset):
     def close(self):
         """
         Explicitly closes the LMDB environment.
-        Necessary for SOTA resource hygiene before DDP worker forking.
+        Necessary for clean resource management before DDP worker forking.
         """
         if self._lmdb_env is not None:
             self._lmdb_env.close()
             self._lmdb_env = None
             logger.info(f"[{self.split.upper()}] LMDB Environment closed.")
 
-    @functools.lru_cache(maxsize=512) # [OPTIMIZATION] Reduced cache size to prevent OOM
+    @functools.lru_cache(maxsize=512)  # Reduced cache size to prevent OOM
     def _fetch_numpy(self, key: str, dtype_str: str, shape: Tuple[int, ...]) -> np.ndarray:
         """
         Fetches and deserializes a numpy array from LMDB.
@@ -442,13 +440,13 @@ class ICUTrajectoryDataset(Dataset):
         obs_mask = masks_win[:self.history_len]
         fut_mask = masks_win[self.history_len:]
         
-        # [v12.7 SOTA FIX] RL Topology Awareness
+        # RL Topology Awareness
         # is_terminal: Does the episode actually end? (True if end of history)
         # is_truncated: Does the sequence window cut off before the episode end?
         is_terminal = (t_end >= len(full_vitals))
         is_truncated = (t_end < len(full_vitals))
 
-        # [v12.8 SOTA FIX] Label Synthesis
+        # Label Synthesis
         # phase: Gating signal (Stable/Pre-Shock/Shock)
         # outcome: Binary target (Does Sepsis occur in next prediction window?)
         phase = self._get_phase_label(labels_win)
@@ -574,7 +572,7 @@ def robust_collate_fn(batch: List[Optional[Dict]]) -> Dict[str, torch.Tensor]:
 
 class StatefulWeightedSampler(Sampler):
     """
-    SOTA State-Persistent Weighted Sampler (v2.1 - DDP Hermetic).
+    State-Persistent Weighted Sampler (DDP Hermetic).
     Rationale: Standard WeightedRandomSampler resets on resumption.
     This version uses a rank-aware deterministic generator and persistent 
     epoch/consumed counters for exact DDP-safe resumption.
@@ -597,7 +595,7 @@ class StatefulWeightedSampler(Sampler):
 
     def set_epoch(self, epoch: int):
         """Called by Trainer at start of epoch."""
-        # [v2.2 SOTA FIX] Resumption Safety
+        # Resumption Safety
         # Only reset state if we are truly starting a DIFFERENT epoch.
         # If resuming (load_state_dict -> set_epoch(same_epoch)), we MUST preserve 'consumed'.
         if epoch != self.epoch:
@@ -615,13 +613,13 @@ class StatefulWeightedSampler(Sampler):
 
     def __iter__(self):
         if self.indices is None:
-            # [SOTA 2025] Deterministic multi-gpu branching
+            # Deterministic multi-gpu branching
             # We seed with (seed + epoch + rank) to ensure 
             # 1. Deterministic reconstruction after crash
             # 2. Unique data stream per GPU rank
             g = torch.Generator()
-            # [v2026 SOTA FIX] Seed Domain Isolation (Smoking Gun #SeedOverlap)
-            # Rationale: Prevents seed collisions between high epoch counts and higher rank indices.
+            # Seed Domain Isolation
+            # Prevents seed collisions between high epoch counts and higher rank indices.
             g.manual_seed(self.seed + self.epoch + self.rank * 1000000)
             
             # Reconstruction is fast (vectorized on CPU)
@@ -664,37 +662,33 @@ def create_sepsis_aware_sampler(
     target: str = "outcome",
 ) -> StatefulWeightedSampler:
     """
-    [v13.0 PATCH] Create a WeightedRandomSampler that oversamples sepsis-positive windows.
-    
+    Create a weighted sampler that oversamples sepsis-positive windows.
+
     Problem: With rare positives, random batches often contain zero positive windows,
     causing noisy gradients for the outcome head.
 
     Solution: Assign higher sampling weights to windows positive for the selected
     target policy (default: outcome in prediction horizon).
-    
+
     Args:
-        dataset: ICUTrajectoryDataset or ICUSotaDataset instance
-        sepsis_boost_factor: Weight multiplier for sepsis-positive windows (default 10x)
-        max_samples: Maximum samples to scan for weight computation (for speed)
-        
+        dataset: ICUTrajectoryDataset or ICUSotaDataset instance.
+        sepsis_boost_factor: Weight multiplier for sepsis-positive windows (default 10x).
+        max_samples: Maximum samples per epoch.
+        seed: Random seed for reproducibility.
+        target: Sampling target — ``'outcome'`` or ``'phase'``.
+
     Returns:
-        WeightedRandomSampler: Sampler that can be passed to DataLoader
-        
-    Usage:
-        dataset = ICUSotaDataset(...)
-        sampler = create_sepsis_aware_sampler(dataset, sepsis_boost_factor=10.0)
-        dataloader = DataLoader(dataset, batch_size=32, sampler=sampler)
+        StatefulWeightedSampler ready to pass to DataLoader.
     """
     n_samples = len(dataset)
     epoch_samples = min(n_samples, int(max_samples)) if max_samples is not None else n_samples
     if epoch_samples <= 0:
         raise ValueError(f"max_samples must be positive, got {max_samples}")
-    
     # Initialize weights (default = 1.0 for normal samples)
     weights = torch.ones(n_samples)
     
-    # [v2026 SOTA FIX] Sampler I/O Race Protection (Smoking Gun #RaceCondition)
-    # Rationale: Prevents parallel workers or different subset runs from thumping I/O.
+    # Sampler I/O Race Protection
+    # Prevents parallel workers or different subset runs from thumping I/O.
     rank = get_rank()
     subset_str = getattr(dataset, "subset_pct", 1.0)
     if target not in {"outcome", "phase"}:
@@ -778,7 +772,7 @@ def create_sepsis_aware_sampler(
             
             global_ptr += n_chunks
             
-        # [v2026 SOTA] Atomic Save via Temp Move
+        # Atomic Save via Temp Move
         if rank == 0:
             try:
                 temp_path = index_path.with_suffix(".tmp.npy")
@@ -796,7 +790,7 @@ def create_sepsis_aware_sampler(
     logger.info(f"[Sampler] Coverage: 100% | Sepsis Detected: {sepsis_count:,} | Rate: {rate*100:.2f}% | Boost factor: {sepsis_boost_factor}x")
     
     # Create the weighted sampler
-    # [v2.0 SOTA FIX]: Use StatefulWeightedSampler for gapless resumption
+    # Use StatefulWeightedSampler for gapless resumption
     sampler = StatefulWeightedSampler(
         weights=weights,
         num_samples=epoch_samples,

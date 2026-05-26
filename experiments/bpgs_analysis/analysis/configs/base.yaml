@@ -1,0 +1,157 @@
+# ═══════════════════════════════════════════════════════════════════════
+# BPGS Analysis Framework — Base Configuration
+# ═══════════════════════════════════════════════════════════════════════
+#
+# Single source of truth for ALL data paths, experiment metadata,
+# and analysis settings.
+#
+# Path resolution:
+#   ${paths.data_root} resolves to the absolute path of bpgs_experiment/data/
+#   All study paths are relative to ${paths.data_root}.
+#
+# Override any value via OmegaConf / Hydra CLI:
+#   python -m analysis.scripts.generate_all paths.data_root=/custom/path
+#
+
+# ── Path configuration ──────────────────────────────────────────────
+# These are the ONLY place where directory layouts are defined.
+# All modules load paths from here — no hardcoding elsewhere.
+
+paths:
+  # Root of the bpgs_experiment/ directory (auto-resolved at load time)
+  experiment_root: null   # set programmatically
+
+  # Root of the bpgs_experiment/data/ directory
+  data_root: null         # set programmatically
+
+  # Analysis output directory (relative to experiment_root)
+  output_root: "analysis/outputs"
+
+  # ── Study data directories (relative to data_root) ──────────────
+  ablation:       "abalation/final_outputs"
+  nyuv2:          "nyuv2/final_output_versions"
+  yeast:          "full_data/final_results/03_yeast_regime_check"
+  rf1:            "full_data/final_results/08_rf1_regime_check"
+  stress_scale:   "stress/final_outputs/02_synthetic_scale_stress"
+  stress_rescale: "stress/final_outputs/06_pure_loss_rescaling"
+  stress_hetero:  "stress/final_outputs/07_heterogeneous_mixed_stress"
+
+# ── Global settings ──────────────────────────────────────────────────
+
+seeds: [42, 43, 44]
+
+# ── Study experiment metadata ────────────────────────────────────────
+
+studies:
+  ablation:
+    methods:
+      - bpgs_canonical
+      - bpgs_batch_aware_fixed
+      - bpgs_stateless_auto
+      - bpgs_stateless_fixed
+      - kendall
+    max_epochs: 60
+    selection_metric: "val/total_loss"
+    selection_mode: "min"
+
+  nyuv2:
+    methods:
+      - bpgs
+      - kendall
+      - static
+      - uwso
+    max_epochs: 120
+    selection_metric: "val/miou"
+    selection_mode: "max"
+    baseline_method: "static"    # used for ΔM computation
+    # Path nesting — some methods use double-nested dirs
+    double_nested: ["bpgs", "static"]
+
+  full_data:
+    yeast:
+      methods: &full_data_methods
+        - bpgs
+        - gradnorm_proxy
+        - kendall
+        - pcgrad
+        - static
+        - uwso
+      max_epochs: 120
+      selection_metric: "val/total_loss"
+      selection_mode: "min"
+
+    rf1:
+      methods: *full_data_methods
+      max_epochs: 120
+      selection_metric: "val/total_loss"
+      selection_mode: "min"
+
+  stress:
+    scale:
+      methods: &stress_scale_methods
+        - bpgs
+        - kendall
+        - uwso
+      scales: [1, 10, 100, 1000]
+
+    rescaling:
+      methods: *stress_scale_methods
+      scales: [1, 10, 100, 1000]
+
+    heterogeneous:
+      methods:
+        - bpgs
+        - kendall
+        - pcgrad
+        - uwso
+      regimes:
+        - clean
+        - noisy
+        - conflict
+
+# ── Output settings ──────────────────────────────────────────────────
+
+outputs:
+  dir: "${paths.output_root}"
+  figures: "${outputs.dir}/figures"
+  tables: "${outputs.dir}/tables"
+  stats: "${outputs.dir}/stats"
+
+# ── Export settings ──────────────────────────────────────────────────
+
+export:
+  figure_formats: ["pdf", "png"]
+  dpi: 300
+  latex_standalone: false     # if true, .tex files are self-compilable
+
+# ── Table settings ───────────────────────────────────────────────────
+
+tables:
+  precision: 3
+  bold_best: true
+  underline_second: true
+  error_type: "std"        # "std" or "sem"
+
+# ── Figure settings ──────────────────────────────────────────────────
+
+figures:
+  style: "neurips"
+  seed_band_alpha: 0.15
+  marker_every: 10         # plot markers every N epochs on curves
+
+# ── Ablation run-ID prefix mapping ───────────────────────────────────
+# All BPGS variants use the prefix "bpgs", not the variant name.
+
+ablation_run_prefix:
+  bpgs_canonical: "bpgs"
+  bpgs_batch_aware_fixed: "bpgs"
+  bpgs_stateless_auto: "bpgs"
+  bpgs_stateless_fixed: "bpgs"
+  kendall: "kendall"
+
+# ── Directories to ignore during stress path discovery ───────────────
+
+stress_ignore_dirs:
+  - "exp_03_imbalance_robustness"
+  - "exp_07_pure_loss_rescaling"
+  - "exp_08_heterogeneous_regime"

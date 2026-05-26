@@ -1,8 +1,4 @@
-"""
-spectra/utils/progress.py
--------------------------
-Progress interfaces for local terminals and log-heavy notebook runtimes.
-"""
+"""Progress bar interfaces for local terminals and notebook runtimes."""
 
 from __future__ import annotations
 

@@ -1,51 +1,44 @@
 # @package _global_
-# configs/dataset/clinical.yaml
-# Axe v3.2: Standardized Clinical Benchmark Configuration
-
 dataset_name: clinical
 dataset_dir: "datasets/sepsis_clinical_28"
 hf_repo: "hellxhell/sepsis-clinical-28"
 sepsis_boost: 5.0
 sampler_target: outcome
-subset_pct: 1.0  # CPM: Subsetting for fast piloting (1.0 = Full Benchmark)
+subset_pct: 1.0
 
-# ─── Target Injection (Clinical Silo + Standard Engine) ────────
 module:
   _target_: spectra.modules.clinical.ClinicalSPECTRAModule
   engine:
     _target_: spectra.engine.optimizers.StandardEngine
 
-# ─── Model Overrides (Expert Clinical Spec) ───────────────────
 model:
   backbone: shared_trunk
-  input_dim: 28           # Standard Clinical 28
-  d_model: 512            # Higher capacity for clinical latent space
-  hidden_layers: 4        # Deeper shared trunk
+  input_dim: 28
+  d_model: 512
+  hidden_layers: 4
   dropout: 0.2
 
-# ─── Task Definitions (Standardized Schema) ───────────────────
 tasks:
   - name: outcome
     type: classification
     loss: bce
-    num_classes: 1        # Binary classification
-    manifold: expert      # High-freq discriminative signal
+    num_classes: 1
+    manifold: expert
     weight: 1.0
-    pos_weight: 3.0        # ~3% positives => stronger positive gradient
+    pos_weight: 3.0
 
   - name: phase
     type: classification
     loss: cross_entropy
-    num_classes: 3        # Stable, Pre-Shock, Shock
-    manifold: planner     # Smooth, slow-moving trajectory
+    num_classes: 3
+    manifold: planner
     weight: 1.0
 
-# ─── Training Hyperparameters (Axe v3.2 Clinical) ─────────────
 train:
   save_ckpt: false
   epochs: 100
-  batch_size: 64         # Standard for clinical time-series
-  lr: 0.00005              # Stable learning rate
+  batch_size: 64
+  lr: 0.00005
   min_lr: 0.000001
   warmup_steps: 300
   weight_decay: 0.0001

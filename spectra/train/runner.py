@@ -1,9 +1,4 @@
-"""
-spectra/train/runner.py
------------------------
-The Core Execution Runner.
-Composes the pieces (Module, DataModule, Callbacks, Hydra) and executes.
-"""
+"""Training runner: composes Module, DataModule, Callbacks, and Trainer."""
 
 import logging
 import os
@@ -40,7 +35,7 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     """
     The orchestrator for the entire SPECTRA training lifecycle.
     """
-    # 1. Environment & Seeding
+
     deterministic = bool(cfg.train.get("deterministic", False))
     deterministic_warn_only = bool(cfg.train.get("deterministic_warn_only", False))
     pl.seed_everything(cfg.get("seed", 42), workers=True)
@@ -51,40 +46,35 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
 
     artifact_dir = resolve_artifact_dir(cfg)
 
-    logger.info(f"[Mission-Control] Workspace: {output_dir}")
-    logger.info(f"[Mission-Control] Stable Artifact Dir: {artifact_dir}")
+    logger.info(f"Workspace: {output_dir}")
+    logger.info(f"Stable Artifact Dir: {artifact_dir}")
     logger.info(
-        "[Mission-Control] Reproducibility: deterministic=%s warn_only=%s cublas=%s",
+        "Reproducibility: deterministic=%s warn_only=%s cublas=%s",
         deterministic,
         deterministic_warn_only,
         str(os.environ.get("CUBLAS_WORKSPACE_CONFIG", "")),
     )
-    logger.info(f"[Mission-Control] Config:\n{OmegaConf.to_yaml(cfg)}")
+    logger.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
 
-    # 2. Configuration Integrity 
-    # (Hydra @package _global_ now handles domain merging)
 
-    # 3. Pre-Flight Validation
+
+
     preflight_check(cfg, output_dir)
 
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save config and metadata for publication reproducibility
+
     config_path = save_experiment_config(cfg, artifact_dir)
-    logger.info(f"[Mission-Control] Config saved to: {config_path}")
+    logger.info(f"Config saved to: {config_path}")
 
     metadata_path = save_experiment_metadata(cfg, artifact_dir)
-    logger.info(f"[Mission-Control] Metadata saved to: {metadata_path}")
+    logger.info(f"Metadata saved to: {metadata_path}")
 
-    # 4. Data Orchestration
+
     datamodule = SPECTRADataModule(cfg)
 
-    # 5. SOTA Target Injection (Runtime Engine Resolution)
-    # Instead of `model = SPECTRAModule(cfg)`, we let Hydra build the
-    # specific Orthogonal engine AND the specific Domain Silo directly!
-    
-    # B-PGS requires a specialized decoupled engine. Due to Hydra v1.1+ namespace
-    # merging limitations, we inject it directly at the execution rim.
+    # Build the optimization engine and module via Hydra instantiation.
+    # B-PGS requires a specialized decoupled engine injected directly.
     method_name = cfg.get("method_name") or cfg.get("method", {}).get("name")
     if method_name == "bpgs":
         from spectra.engine.optimizers.bpgs import BPGSEngine
@@ -94,7 +84,7 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
         
     model = instantiate(cfg.module, cfg=cfg, engine=engine, _recursive_=False)
 
-    # 6. Callback Infrastructure
+
     callbacks = [
         *build_checkpoints(cfg, artifact_dir),
         GradientHealthCallback(check_interval=50),
@@ -105,12 +95,7 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     if es_cb is not None:
         callbacks.append(es_cb)
 
-    # 7. Logger Integration
     loggers = []
-
-    # 7.1 CSV Logging (SOTA Consolidated Artifacts)
-    # We place the CSV log inside the Hydra-managed output_dir to ensure 
-    # all assets (configs, checkpoints, logs) are bundled together.
     method_name = cfg.get("method_name", cfg.get("method", {}).get("name", "unknown"))
     dataset_name = cfg.get("dataset_name", "unknown")
     run_id = stable_run_id(cfg)
@@ -121,7 +106,7 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
         version=run_id,
     )
     loggers.append(csv_logger)
-    logger.info(f"[Logging] CSV Logger initialized in stable artifact dir: {artifact_dir}/csv_logs/{run_id}")
+    logger.info(f"CSV logger: {artifact_dir}/csv_logs/{run_id}")
 
     wandb_session = WandbSession(
         WandbSettings.from_logging_config(cfg.get("logging", {})),
@@ -141,19 +126,19 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
     wandb_logger = wandb_session.create_lightning_logger()
     if wandb_logger is not None:
         loggers.append(wandb_logger)
-        logger.info(f"[Logging] WandB logger initialized in stable artifact dir: {wandb_session.local_dir}")
+        logger.info(f"WandB logger: {wandb_session.local_dir}")
 
-    # 8. Trainer Configuration
+
     if torch.cuda.is_available() and not deterministic:
         torch.backends.cudnn.benchmark = True
 
     gradient_clip_val = cfg.train.get("grad_clip", 1.0)
     if not getattr(model, "automatic_optimization", True):
-        gradient_clip_val = None # Managed by manual engine
+        gradient_clip_val = None
         method_name_local = cfg.get("method_name") or cfg.get("method", {}).get("name", "unknown")
         logger.info(
-            f"[Mission-Control] Manual optimization active (method={method_name_local}). "
-            f"Automatic PL gradient clipping disabled — engine manages clipping internally."
+            f"Manual optimization active (method={method_name_local}). "
+            f"PL gradient clipping disabled; engine manages clipping."
         )
 
     has_tqdm_bar = any(
@@ -176,19 +161,19 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
         enable_progress_bar=has_tqdm_bar,
     )
 
-    # 9. Mission Start
+
     resolved_resume = resolve_resume_checkpoint(cfg, artifact_dir)
     ckpt_path = str(resolved_resume) if resolved_resume is not None else None
     if ckpt_path:
-        logger.info(f"[Mission-Control] Resuming from checkpoint: {ckpt_path}")
+        logger.info(f"Resuming from checkpoint: {ckpt_path}")
     elif str(cfg.get("resume_from", "")).strip().lower() == "auto":
-        logger.info("[Mission-Control] resume_from=auto requested, but no prior last.ckpt was found. Starting fresh.")
+        logger.info("resume_from=auto requested but no last.ckpt found. Starting fresh.")
     
     logger.info(
-        f"[Mission-Control] All systems GO. "
-        f"Method={cfg.get('method_name', cfg.get('method', {}).get('name', '?'))}, "
-        f"Epochs={cfg.train.epochs}, "
-        f"Tasks={[t.name for t in cfg.tasks]}"
+        f"Starting training: "
+        f"method={cfg.get('method_name', cfg.get('method', {}).get('name', '?'))}, "
+        f"epochs={cfg.train.epochs}, "
+        f"tasks={[t.name for t in cfg.tasks]}"
     )
     
     fit_started_at = datetime.utcnow()
@@ -219,7 +204,7 @@ def execute_training_mission(cfg: DictConfig, output_dir: Path):
         }
         run_summary_path = save_run_summary(cfg, artifact_dir, summary_payload)
         wandb_session.update_summary(summary_payload)
-        logger.info(f"[Mission-Control] Run summary saved to: {run_summary_path}")
-        logger.info("[Mission-Control] Mission Accomplished. [SUCCESS]")
+        logger.info(f"Run summary saved to: {run_summary_path}")
+        logger.info("Training completed successfully.")
     finally:
         wandb_session.finish()

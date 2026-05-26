@@ -1,8 +1,4 @@
-"""
-spectra/utils/config.py
------------------------
-Universal configuration merging and routing utilities.
-"""
+"""Universal configuration merging and routing utilities."""
 from omegaconf import DictConfig, OmegaConf
 
 def _merge_dataset_defaults(base_cfg: DictConfig, override_cfg: DictConfig) -> DictConfig:
@@ -20,7 +16,6 @@ def _merge_dataset_defaults(base_cfg: DictConfig, override_cfg: DictConfig) -> D
     if not isinstance(defaults, dict):
         defaults = {}
     
-    # [SOTA FIX]: Right overwrites Left! So defaults MUST be on the left, 
-    # and cli_overrides on the right to preserve CLI intent!
+    # Right overwrites left: defaults on the left, CLI overrides on the right.
     merged = OmegaConf.merge(defaults, cli_overrides)
     return OmegaConf.create(merged)

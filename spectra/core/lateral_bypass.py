@@ -1,6 +1,4 @@
 """
-spectra/core/lateral_bypass.py
-------------------------------
 Lateral Expert Bypass: High-frequency feature extraction path.
 
 Processes raw input through multi-scale convolutions and fuses with

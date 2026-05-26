@@ -1,8 +1,4 @@
-"""
-spectra/utils/callbacks.py
---------------------------
-Universal Checkpoint and Early Stopping Factory.
-"""
+"""Checkpoint and early stopping callback factory."""
 
 from pathlib import Path
 from typing import List, Optional

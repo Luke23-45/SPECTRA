@@ -1,6 +1,4 @@
 """
-spectra/backbones/segnet.py
-----------------------------
 SegNet Encoder-Decoder Backbone for Dense Prediction MTL.
 
 Standard architecture for NYUv2 multi-task learning benchmarks
@@ -42,9 +40,9 @@ import torch.nn.functional as F
 logger = logging.getLogger("spectra.backbones.segnet")
 
 
-# =============================================================================
+
 # ENCODER BLOCK
-# =============================================================================
+
 
 class SegNetEncoderBlock(nn.Module):
     """
@@ -75,9 +73,9 @@ class SegNetEncoderBlock(nn.Module):
         return x, indices, pre_pool_size
 
 
-# =============================================================================
+
 # DECODER BLOCK
-# =============================================================================
+
 
 class SegNetDecoderBlock(nn.Module):
     """
@@ -104,9 +102,9 @@ class SegNetDecoderBlock(nn.Module):
         return x
 
 
-# =============================================================================
+
 # SEGNET BACKBONE
-# =============================================================================
+
 
 class SegNet(nn.Module):
     """
@@ -144,14 +142,13 @@ class SegNet(nn.Module):
 
         self.d_model = d_model
 
-        # ─── Encoder ─────────────────────────────────────────────
+        # Encoder 
         enc_in_channels = [input_channels] + encoder_channels[:-1]
         self.encoders = nn.ModuleList([
             SegNetEncoderBlock(in_ch, out_ch)
             for in_ch, out_ch in zip(enc_in_channels, encoder_channels)
         ])
 
-        # ─── Decoder ─────────────────────────────────────────────
         # Decoder mirrors encoder in reverse
         dec_channels = list(reversed(encoder_channels))
         dec_out_channels = dec_channels[1:] + [d_model]
@@ -178,7 +175,7 @@ class SegNet(nn.Module):
         Raises:
             ValueError: If spatial dimensions are not divisible by 32.
         """
-        # ─── Input validation for spatial dimensions ─────────────
+        # Input validation for spatial dimensions 
         _, _, H, W = x.shape
         min_size = 32  # 5 pooling layers × 2x2 = 32x minimum
         
@@ -196,7 +193,7 @@ class SegNet(nn.Module):
                 f"Recommended sizes: 32, 64, 128, 256, 288, 320, 384."
             )
         
-        # ─── Encode ──────────────────────────────────────────────
+        # Encode 
         indices_stack = []
         sizes_stack = []
 
@@ -205,7 +202,7 @@ class SegNet(nn.Module):
             indices_stack.append(indices)
             sizes_stack.append(pre_pool_size)
 
-        # ─── Decode ──────────────────────────────────────────────
+        # Decode 
         for decoder in self.decoders:
             indices = indices_stack.pop()
             size = sizes_stack.pop()
@@ -214,9 +211,8 @@ class SegNet(nn.Module):
         return x
 
 
-# =============================================================================
+
 # STANDALONE VERIFICATION
-# =============================================================================
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

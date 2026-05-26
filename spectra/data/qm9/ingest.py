@@ -1,6 +1,4 @@
 """
-spectra/data/qm9/ingest.py
---------------------------
 QM9 tabular preparation with deterministic string-derived molecular features.
 """
 

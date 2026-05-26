@@ -1,6 +1,4 @@
 """
-spectra/data/yeast/ingest.py
-----------------------------
 Yeast Protein Localization multi-label data preparation.
 """
 

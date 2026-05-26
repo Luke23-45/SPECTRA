@@ -1,14 +1,12 @@
 """
-spectra/data/nyuv2/nyuv2_lmdb_sota.py
---------------------------------------------------------------------------------
-SPECTRA SOTA Data Ingestion Pipeline (v5.0 — "Axe Specification")
-Author: SPECTRA Research Team
+NYUv2 LMDB Data Ingestion Pipeline.
+
 Status: Production / Multi-Stage Hardened
 
 Description:
     Processes the NYUv2 dataset (tanganke/nyuv2) into a high-fidelity LMDB
-    storage format. This pipeline follows the "Axe" philosophy: multi-stage
-    staging, atomic materialization, and automated cleanup.
+    storage format with multi-stage staging, atomic materialization,
+    and automated cleanup.
 
 STAGES:
     1. INGESTION: Download (via HF cache) and write to LMDB in a unified pipeline.
@@ -35,7 +33,7 @@ from tqdm.auto import tqdm
 from typing import Dict, Any, List, Optional, Tuple
 
 # ==============================================================================
-# AXE v6.4: ABSOLUTE PROJECT ISOLATION (HuggingFace Cache Guard)
+# ABSOLUTE PROJECT ISOLATION (HuggingFace Cache Guard)
 # ==============================================================================
 # Force all HF activity into the project-local staging directory.
 # This MUST be set before engine initialization.
@@ -60,7 +58,7 @@ IGNORE_INDEX = 255        # CrossEntropyLoss ignore_index
 CLEANUP_STAGING = True  # Toggle to False to keep staged data for future runs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-logger = logging.getLogger("SPECTRA_AXE_v5")
+logger = logging.getLogger("spectra.data.nyuv2.lmdb")
 
 # ==============================================================================
 # 1. UTILITY ENGINES
@@ -116,7 +114,7 @@ def ensure_contiguous_hwc(array: np.ndarray) -> np.ndarray:
 
 class PhysicsEngine:
     """
-    SOTA Geometric & Numerical Validation Engine.
+    Geometric & Numerical Validation Engine.
     Handles depth clamping, normal normalization, and shape consistency.
     """
     DEPTH_MAX = 10.0
@@ -214,7 +212,7 @@ class QualityIngestionEngine:
     def __init__(self):
         DiskGuard.check_space(path=str(OUTPUT_DIR.parent.absolute()))
         
-        # Axe v6.1: Multi-Split Foundation
+        # Multi-split foundation
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         self.envs = {}
         self.indices = {} # Dynamic split initialization
@@ -548,7 +546,7 @@ def run_pipeline(
         cleanup()
 
     logger.info("="*60)
-    logger.info("MISSION COMPLETE. NYUv2 is ready for high-fidelity training.")
+    logger.info("NYUv2 data generation complete. Ready for training.")
     logger.info("="*60)
 
 

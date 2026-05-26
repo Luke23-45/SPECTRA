@@ -1,8 +1,4 @@
-"""
-spectra/baselines/pcgrad.py
----------------------------
-Canonical PCGrad baseline.
-"""
+"""PCGrad baseline."""
 
 import random
 from typing import Dict, List, Optional, Tuple

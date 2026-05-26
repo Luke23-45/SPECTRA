@@ -1,7 +1,5 @@
 """
-spectra/heads/dense_heads.py
-------------------------------
-Dense Prediction Heads for Pixel-wise Multi-Task Learning (NYUv2).
+Dense prediction heads for pixel-wise multi-task learning (NYUv2).
 
 These heads consume shared feature maps [B, D, H, W] from an encoder-decoder
 backbone (SegNet) and produce per-pixel predictions for each task:
@@ -16,9 +14,8 @@ Architecture: 1×1 convolutions (per-pixel linear mixing)
 
 Why NOT larger kernels?
     The backbone already provides spatially-aware features. Adding 3×3 convs
-    in heads would introduce task-specific spatial reasoning that B-PGS cannot
-    properly weight (the gradients would mix spatial and task-specific signals).
-    1×1 keeps the gradient signal clean for B-PGS.
+    in heads would introduce task-specific spatial reasoning that the weighter
+    cannot properly disentangle. 1×1 keeps the gradient signal clean.
 """
 
 from __future__ import annotations

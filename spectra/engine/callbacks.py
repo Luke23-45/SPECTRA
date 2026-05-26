@@ -1,11 +1,5 @@
 """
-spectra/engine/callbacks.py
-----------------------------
-Training infrastructure callbacks for SPECTRA.
-
-Provides:
-    1. GradientHealthCallback — real gradient norm monitoring with spike alerts
-       (replaces the former NTKGradExplosionTracker which was a silent no-op)
+Gradient health monitoring callback.
 """
 
 import logging
@@ -84,8 +78,8 @@ class GradientHealthCallback(pl.Callback):
             ratios = [gn / pn for gn, pn in param_norms]
             mean_grad_weight_ratio = sum(ratios) / len(ratios)
             
-            # [SOTA Fix] Actual update scales with the learning rate!
-            # M3 Patch/NASA-Grade: Multi-Parameter-Group LR Averaging
+            # Actual update scales with the learning rate!
+            # Multi-parameter-group LR averaging
             # Safely extract mean LR across all param groups whether Automatic or Manual.
             current_lr = 1e-3
             try:

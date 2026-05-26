@@ -1,7 +1,4 @@
-"""
-spectra/engine/schedulers.py
-----------------------------
-Learning rate schedulers for SPECTRA training.
+"""SPECTRA learning rate scheduler factory.
 
 Provides cosine-with-warmup (SOTA for transformer training) and
 optional OneCycleLR wrapper.
